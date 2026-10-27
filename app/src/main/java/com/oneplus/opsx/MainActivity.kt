@@ -301,7 +301,8 @@ class MainActivity : ComponentActivity() {
                                 "beIN 1" to "1080|1",
                                 "beIN 2" to "1080|2",
                                 "beIN 3" to "1080|3",
-                                "SSC 1" to "1080|4"
+                                "beIN Xtra" to "https://bein-xtra-bein.amagi.tv/playlist.m3u8",
+                                "Alkass 1" to "https://liveeu-gcps.alkassdigital.net/alkass1-p/main.m3u8"
                             )
                             channels.forEach { (name, id) ->
                                 Surface(
@@ -314,7 +315,7 @@ class MainActivity : ComponentActivity() {
                                     Text(
                                         text = name,
                                         color = Color.White,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         fontWeight = FontWeight.Medium,
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -381,7 +382,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = generatedOpsxUrl.ifEmpty { "جاري توليد الرابط على المنفذ..." },
+                                        text = generatedOpsxUrl.ifEmpty { "جاري استقرار وتوليد الرابط..." },
                                         color = Color.White,
                                         fontSize = 12.sp,
                                         fontFamily = FontFamily.Monospace
@@ -429,7 +430,7 @@ class MainActivity : ComponentActivity() {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp)
+                        .height(190.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color(0xFF141824))
                         .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp)),
@@ -455,14 +456,14 @@ class MainActivity : ComponentActivity() {
                             verticalArrangement = Arrangement.Center
                         ) {
                             Text(
-                                text = "شاشة اختبار البث (MediaCodec Hardware)",
+                                text = "شاشة اختبار البث (MediaCodec Hardware + AAC Audio)",
                                 color = Color(0xFFB0BEC5),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "ضع رابط البث واضغط [تشغيل واختبار البث]",
+                                text = "ضع رابط البث واضغط [تشغيل واختبار البث بالصوت والصورة]",
                                 color = Color(0xFF78909C),
                                 fontSize = 11.sp
                             )
@@ -558,25 +559,42 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // أزرار تشغيل المشغل
+                        // أزرار تشغيل المشغل مع التحويل الذكي
                         Button(
                             onClick = {
                                 if (!isPlayerRunning) {
                                     isPlayerRunning = true
                                     isLocalPlaying = false
-                                    updateLog("بدء تشغيل واختبار الدفق من: $testPlayerUrl")
 
                                     activePlaybackJob?.cancel()
                                     activePlaybackJob = lifecycleScope.launch {
+                                        val trimmedUrl = testPlayerUrl.trim()
+                                        val finalPlayUrl: String
+
+                                        // إذا كان الرابط M3U8 أو قناة ياسين، يتم تحويله تلقائياً عبر خادم OPSX الداخلي
+                                        if (trimmedUrl.contains(".m3u8") || trimmedUrl.contains("|") || trimmedUrl.contains("ch=")) {
+                                            updateLog("تحويل وتوجيه المصدر [$trimmedUrl] إلى OPSX...")
+                                            yacineEngine.startStream(
+                                                targetUrl = trimmedUrl,
+                                                onUrlReady = { u -> generatedOpsxUrl = u },
+                                                onStatus = { s -> updateLog(s) }
+                                            )
+                                            delay(1500)
+                                            finalPlayUrl = "http://127.0.0.1:8989/live.opsx"
+                                        } else {
+                                            finalPlayUrl = trimmedUrl
+                                        }
+
+                                        updateLog("بدء تشغيل واختبار الدفق من: $finalPlayUrl (مزامنة عتادية متناسقة 1.0x)")
                                         delay(300)
                                         val holder = playbackSurfaceView?.holder
                                         if (holder != null) {
-                                            opsxPlayer.playUrl(testPlayerUrl, holder.surface) { status ->
+                                            opsxPlayer.playUrl(finalPlayUrl, holder.surface) { status ->
                                                 updateLog(status)
                                             }
                                             isPlayerRunning = false
                                         } else {
-                                            updateLog("تنبيه: شاشة العرض غير جاهزة")
+                                            updateLog("تنبيه: شاشة العرض غير جاهزة بعد")
                                             isPlayerRunning = false
                                         }
                                     }
@@ -594,7 +612,7 @@ class MainActivity : ComponentActivity() {
                             )
                         ) {
                             Text(
-                                text = if (isPlayerRunning) "إيقاف المشغل" else "تشغيل واختبار البث على الشاشة (Play Stream)",
+                                text = if (isPlayerRunning) "إيقاف المشغل" else "تشغيل واختبار البث (صورة طبيعية 1.0x + صوت)",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -718,7 +736,7 @@ class MainActivity : ComponentActivity() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "سجل العمليات والتفاصيل الحية:",
+                            text = "سجل العمليات والتفاصيل الحية (صوت وفيديو + Rust Core):",
                             color = Color(0xFFB0BEC5),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
