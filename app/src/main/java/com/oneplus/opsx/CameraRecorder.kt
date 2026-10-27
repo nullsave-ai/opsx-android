@@ -24,12 +24,15 @@ class CameraRecorder(private val context: Context) {
     private var muxer: OpsxMuxer? = null
     private var recordThread: Thread? = null
 
+    private var currentOutputFile: File? = null
+
     fun startRecording(
         outputFile: File,
         previewView: PreviewView,
         lifecycleOwner: LifecycleOwner,
         onStatus: (String) -> Unit
     ) {
+        currentOutputFile = outputFile
         val width = 1280
         val height = 720
         val bitRate = 2_000_000 // 2 Mbps
@@ -110,6 +113,7 @@ class CameraRecorder(private val context: Context) {
             mediaCodec?.release()
             inputSurface?.release()
             muxer?.close(finalPts = 30000)
+            currentOutputFile?.let { onFinished(it) }
         } catch (e: Exception) {
             e.printStackTrace()
         }
