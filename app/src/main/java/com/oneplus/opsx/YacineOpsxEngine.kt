@@ -1,5 +1,6 @@
 package com.oneplus.opsx
 
+import android.util.Base64
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.ServerSocket
@@ -10,31 +11,36 @@ import java.nio.ByteOrder
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * محرك فك تشفير وتحويل قنوات ياسين المباشرة محلياً
- * يعتمد على نواة Rust الأصلية (libopsx_core.so) لفك الحزم وتغليفها كـ OPSX في الذاكرة بدون GC Overhead
+ * محرك البث والفك المباشر لمنظومة OPSF / OPSX
+ * يدعم:
+ * 1. فك روابط قنوات ياسين مباشرة (فك base64 والاتصال المباشر بمخدمات البث دون الحاجة لوسيط).
+ * 2. استقبال أي رابط بث مخصص (M3U8 / TS / Cloudflare / Direct Origin).
+ * 3. تحويل الدفق فورياً عبر نواة Rust الأصلية (libopsx_core.so) إلى مقاطع OPSX وبثها محلياً.
  */
 class YacineOpsxEngine {
 
+    @Volatile
     private var isRunning = false
     private var serverSocket: ServerSocket? = null
     private val clientSockets = CopyOnWriteArrayList<Socket>()
     private val seenChunkUrls = mutableSetOf<String>()
     private var basePtsCounter = 0L
 
-    fun startNativeGateway(
-        channelQuery: String = "1080|1",
+    fun startStream(
+        targetUrl: String,
         onUrlReady: (String) -> Unit,
         onStatus: (String) -> Unit
     ) {
+        stop()
         isRunning = true
 
-        // 1. تشغيل خادم بث OPSX المحلي
+        // 1. تشغيل خادم بث OPSX المحلي على المنفذ 8989
         Thread {
             try {
                 serverSocket = ServerSocket(8989)
-                val localUrl = "http://127.0.0.1:8989/live.opsx"
-                onUrlReady(localUrl)
-                onStatus("خادم OPSX المباشر متاح على: $localUrl (مدعوم بنواة Rust)")
+                val localOpsxUrl = "http://127.0.0.1:8989/live.opsx"
+                onUrlReady(localOpsxUrl)
+                onStatus("خادم OPSX المحلي نشط على المنفذ 8989 (نواة Rust الأصلية متصلة)")
 
                 while (isRunning) {
                     val client = serverSocket?.accept() ?: break
@@ -56,7 +62,7 @@ class YacineOpsxEngine {
                     header.putShort(40.toShort())
                     header.putInt(90000)
                     header.putLong(0L)
-                    header.put(2.toByte())
+                    header.put(1.toByte())
                     header.put(ByteArray(3))
                     header.putInt(0)
                     header.put(ByteArray(12))
@@ -65,72 +71,167 @@ class YacineOpsxEngine {
                     val crc = OpsxNativeBridge.computeCrc(rawHeader)
                     ByteBuffer.wrap(rawHeader).order(ByteOrder.BIG_ENDIAN).putInt(24, crc)
                     client.getOutputStream().write(rawHeader)
+
+                    // إرسال واصف المسار الأولي (28 بايت)
+                    val trackDesc = ByteBuffer.allocate(24).order(ByteOrder.BIG_ENDIAN)
+                    trackDesc.put(1.toByte())       // Track ID
+                    trackDesc.put(1.toByte())       // Video
+                    trackDesc.putShort(1.toShort()) // H.264
+                    trackDesc.putInt(90000)
+                    trackDesc.putShort(1920.toShort())
+                    trackDesc.putShort(1080.toShort())
+                    trackDesc.putInt(0)
+                    trackDesc.put(0.toByte())
+                    trackDesc.put(ByteArray(5))
+                    trackDesc.putShort(0.toShort())
+
+                    val rawTrack = trackDesc.array()
+                    val trackCrc = OpsxNativeBridge.computeCrc(rawTrack)
+                    client.getOutputStream().write(rawTrack)
+                    client.getOutputStream().write(
+                        ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(trackCrc).array()
+                    )
                 }
             } catch (e: Exception) {
-                if (isRunning) onStatus("توقف خادم OPSX: ${e.message}")
+                if (isRunning) onStatus("تنبيه الخادم المحلي: ${e.message}")
             }
         }.start()
 
-        // 2. سحب الدفق وتمريره إلى نواة Rust لتحويله إلى OPSX فوري
+        // 2. سحب وتحويل الدفق المباشر
         Thread {
-            onStatus("جاري فك وتغليف القناة عبر محرك Rust الأصلي...")
+            onStatus("بدء الاتصال بمصدر البث: $targetUrl")
             while (isRunning) {
                 try {
-                    val streamPlaylistUrl = resolveChannelDirectStream(channelQuery)
-                    if (streamPlaylistUrl != null) {
-                        fetchAndProcessWithRust(streamPlaylistUrl, onStatus)
-                    } else {
-                        Thread.sleep(3000)
-                    }
+                    processStreamInput(targetUrl, onStatus)
                 } catch (e: Exception) {
-                    onStatus("إعادة المحاولة: ${e.message}")
-                    Thread.sleep(2000)
+                    if (isRunning) {
+                        onStatus("محاولة إعادة الاتصال بمصدر البث: ${e.message}")
+                        try { Thread.sleep(2000) } catch (ignored: Exception) {}
+                    }
                 }
             }
         }.start()
     }
 
-    private fun resolveChannelDirectStream(channelQuery: String): String? {
-        val upstreamUrl = "https://null-stream.nullsave-ai.workers.dev/live?ch=$channelQuery"
-        val conn = URL(upstreamUrl).openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+    private fun processStreamInput(inputUrl: String, onStatus: (String) -> Unit) {
+        val resolvedUrl = resolveTargetUrl(inputUrl)
+
+        val conn = URL(resolvedUrl).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        conn.setRequestProperty("Referer", "https://yacineapp.tv/")
         conn.connectTimeout = 8000
         conn.readTimeout = 8000
 
-        return if (conn.responseCode == 200) upstreamUrl else null
+        val contentType = conn.contentType ?: ""
+        if (contentType.contains("mpegurl", ignoreCase = true) || resolvedUrl.contains(".m3u8", ignoreCase = true) || inputUrl.contains("/live?ch=") || inputUrl.contains("|")) {
+            // معالجة قائمة HLS
+            val lines = conn.inputStream.bufferedReader().readLines()
+            val chunkLines = lines.filter { it.isNotBlank() && !it.startsWith("#") && !seenChunkUrls.contains(it) }
+
+            for (rawLine in chunkLines) {
+                if (!isRunning) break
+                seenChunkUrls.add(rawLine)
+                if (seenChunkUrls.size > 100) seenChunkUrls.clear()
+
+                val actualChunkUrl = resolveChunkDirectUrl(resolvedUrl, rawLine)
+                downloadAndDemuxChunk(actualChunkUrl, onStatus)
+            }
+            try { Thread.sleep(1500) } catch (ignored: Exception) {}
+        } else {
+            // دفق TS مباشر متصل
+            val inputStream = conn.inputStream
+            val buffer = ByteArray(188 * 100) // 18.8 KB حزم TS
+            while (isRunning) {
+                var bytesRead = 0
+                while (bytesRead < buffer.size) {
+                    val r = inputStream.read(buffer, bytesRead, buffer.size - bytesRead)
+                    if (r == -1) break
+                    bytesRead += r
+                }
+                if (bytesRead == 0) break
+
+                val chunkData = if (bytesRead == buffer.size) buffer else buffer.copyOfRange(0, bytesRead)
+                val t0 = System.nanoTime()
+                val opsxData = OpsxNativeBridge.demuxTsToOpsx(chunkData, basePtsCounter)
+                val durationMs = (System.nanoTime() - t0) / 1_000_000.0
+
+                basePtsCounter += (chunkData.size / 188) * 30L
+                broadcastChunk(opsxData)
+            }
+        }
     }
 
-    private fun fetchAndProcessWithRust(playlistUrl: String, onStatus: (String) -> Unit) {
-        val conn = URL(playlistUrl).openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        val lines = conn.inputStream.bufferedReader().readLines()
+    /**
+     * فك الرابط والتعامل مع روابط ياسين المباشرة
+     */
+    private fun resolveTargetUrl(input: String): String {
+        val trimmed = input.trim()
+        return when {
+            trimmed.matches(Regex("^[0-9]+\\|[0-9]+$")) -> {
+                "https://null-stream.nullsave-ai.workers.dev/live?ch=$trimmed"
+            }
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> {
+                trimmed
+            }
+            else -> {
+                "https://null-stream.nullsave-ai.workers.dev/live?ch=1080|1"
+            }
+        }
+    }
 
-        val newChunks = lines.filter { it.isNotBlank() && !it.startsWith("#") && !seenChunkUrls.contains(it) }
+    /**
+     * فك تشفير وتوجيه قطعة TS:
+     * إذا احتوت على ?b64= يتم فك Base64 والاتصال مباشرة بمخدم البث الأصلي بدون وسيط
+     */
+    private fun resolveChunkDirectUrl(baseUrl: String, rawLine: String): String {
+        var finalUrl = rawLine
+        if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
+            val basePrefix = baseUrl.substringBeforeLast('/')
+            finalUrl = "$basePrefix/$finalUrl"
+        }
 
-        for (chunkUrl in newChunks) {
-            seenChunkUrls.add(chunkUrl)
-            if (seenChunkUrls.size > 50) seenChunkUrls.clear()
+        if (finalUrl.contains("b64=")) {
+            try {
+                val b64Part = finalUrl.substringAfter("b64=").substringBefore('&')
+                val decodedBytes = Base64.decode(b64Part, Base64.DEFAULT)
+                val decodedUrl = String(decodedBytes, Charsets.UTF_8).trim()
+                if (decodedUrl.startsWith("http://") || decodedUrl.startsWith("https://")) {
+                    return decodedUrl
+                }
+            } catch (e: Exception) {
+                // المتابعة بالرابط كما هو في حال تعذر الفك
+            }
+        }
+        return finalUrl
+    }
 
-            // تنزيل كتلة الـ TS
+    private fun downloadAndDemuxChunk(chunkUrl: String, onStatus: (String) -> Unit) {
+        try {
             val chunkConn = URL(chunkUrl).openConnection() as HttpURLConnection
-            chunkConn.setRequestProperty("User-Agent", "Mozilla/5.0")
-            val tsData = chunkConn.inputStream.readBytes()
+            chunkConn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+            chunkConn.setRequestProperty("Referer", "https://yacineapp.tv/")
+            chunkConn.connectTimeout = 7000
+            chunkConn.readTimeout = 7000
 
-            // تمرير مصفوفة البايتات كاملة إلى محرك Rust لتفكيكها وتغليفها دفعة واحدة
+            val tsData = chunkConn.inputStream.readBytes()
+            if (tsData.isEmpty()) return
+
             val tStart = System.nanoTime()
             val opsxPackets = OpsxNativeBridge.demuxTsToOpsx(tsData, basePtsCounter)
             val elapsedMs = (System.nanoTime() - tStart) / 1_000_000.0
 
             basePtsCounter += (tsData.size / 188) * 30L
+            val kb = tsData.size / 1024
+            onStatus("معالجة محرك Rust: استخراج $kb KB من البث -> تحويلها إلى OPSX في ${String.format("%.2f", elapsedMs)} ms")
 
-            onStatus("محرك Rust: معالجة ${tsData.size / 1024} KB من البث -> تحويلها إلى OPSX في ${String.format("%.2f", elapsedMs)} ms")
-
-            // إرسال حزم الـ OPSX الناتجة فوراً للمشتركين
             broadcastChunk(opsxPackets)
+        } catch (e: Exception) {
+            onStatus("تنبيه في سحب القطعة: ${e.message}")
         }
     }
 
     private fun broadcastChunk(data: ByteArray) {
+        if (data.isEmpty()) return
         val dead = mutableListOf<Socket>()
         for (sock in clientSockets) {
             try {
@@ -144,7 +245,8 @@ class YacineOpsxEngine {
 
     fun stop() {
         isRunning = false
-        serverSocket?.close()
+        try { serverSocket?.close() } catch (e: Exception) {}
+        serverSocket = null
         for (s in clientSockets) {
             try { s.close() } catch (e: Exception) {}
         }

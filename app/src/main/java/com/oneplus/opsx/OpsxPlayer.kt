@@ -7,60 +7,102 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class OpsxPlayer {
 
     private var decoder: MediaCodec? = null
+    @Volatile
     private var isPlaying = false
 
-    suspend fun play(opsxFile: File, surface: Surface, onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+    private fun readFully(inputStream: InputStream, buffer: ByteArray): Boolean {
+        var offset = 0
+        while (offset < buffer.size) {
+            val r = inputStream.read(buffer, offset, buffer.size - offset)
+            if (r == -1) return false
+            offset += r
+        }
+        return true
+    }
+
+    suspend fun playUrl(streamUrl: String, surface: Surface, onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+        try {
+            onStatus("الاتصال بدفق OPSX المباشر: $streamUrl")
+            val conn = URL(streamUrl).openConnection()
+            conn.connectTimeout = 8000
+            conn.readTimeout = 12000
+            val inputStream = conn.getInputStream()
+            playStream(inputStream, surface, isLive = true, onStatus = onStatus)
+        } catch (e: Exception) {
+            onStatus("خطأ في تشغيل الدفق المباشر: ${e.message}")
+        }
+    }
+
+    suspend fun playFile(opsxFile: File, surface: Surface, onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
         if (!opsxFile.exists()) {
             onStatus("خطأ: ملف OPSX غير موجود.")
             return@withContext
         }
-
         val fis = FileInputStream(opsxFile)
-        val headerBytes = ByteArray(40)
-        fis.read(headerBytes)
+        playStream(fis, surface, isLive = false, onStatus = onStatus)
+    }
 
-        val headerBuf = ByteBuffer.wrap(headerBytes).order(ByteOrder.BIG_ENDIAN)
-        val magic = ByteArray(4)
-        headerBuf.get(magic)
-        if (String(magic) != "OPSX") {
-            onStatus("خطأ: ملف غير صالح (Magic غير مطابق).")
-            fis.close()
-            return@withContext
-        }
-
-        // قراءة واصف المسار الأول
-        val trackHeader = ByteArray(28)
-        fis.read(trackHeader)
-        val trackBuf = ByteBuffer.wrap(trackHeader).order(ByteOrder.BIG_ENDIAN)
-        val trackId = trackBuf.get()
-        val trackType = trackBuf.get()
-        val codecId = trackBuf.short
-        trackBuf.int // timescale
-        val width = trackBuf.short.toInt()
-        val height = trackBuf.short.toInt()
-
-        onStatus("تم التحقق من دفق OPSX: المسار $trackId، الدقة ${width}x${height}، مِرماز: H.264")
-
-        // تهيئة MediaCodec لفك التشفير وعرضه على السطح مباشرة
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
-        decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        decoder?.configure(format, surface, null, 0)
-        decoder?.start()
-
+    suspend fun playStream(
+        inputStream: InputStream,
+        surface: Surface,
+        isLive: Boolean,
+        onStatus: (String) -> Unit
+    ) = withContext(Dispatchers.IO) {
         isPlaying = true
-        val bufferInfo = MediaCodec.BufferInfo()
-
         try {
-            while (isPlaying && fis.available() > 0) {
-                val chunkHeader = ByteArray(28)
-                val readH = fis.read(chunkHeader)
-                if (readH < 28) break
+            val headerBytes = ByteArray(40)
+            if (!readFully(inputStream, headerBytes)) {
+                onStatus("خطأ: تعذر قراءة رأس OPSX.")
+                return@withContext
+            }
+
+            val magic = String(headerBytes.copyOfRange(0, 4), Charsets.US_ASCII)
+            if (magic != "OPSX") {
+                onStatus("خطأ: تنسيق الملف غير صالح (Magic=$magic)")
+                return@withContext
+            }
+
+            // قراءة واصف المسار الأول
+            val trackHeader = ByteArray(28)
+            if (!readFully(inputStream, trackHeader)) {
+                onStatus("خطأ: تعذر قراءة واصف المسار.")
+                return@withContext
+            }
+            val trackBuf = ByteBuffer.wrap(trackHeader).order(ByteOrder.BIG_ENDIAN)
+            val trackId = trackBuf.get()
+            val trackType = trackBuf.get()
+            val codecId = trackBuf.short
+            trackBuf.int // timescale
+            var width = trackBuf.short.toInt()
+            var height = trackBuf.short.toInt()
+
+            if (width <= 0) width = 1280
+            if (height <= 0) height = 720
+
+            val mimeType = if (codecId.toInt() == 0x0002) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+            val codecName = if (codecId.toInt() == 0x0002) "HEVC (H.265)" else "AVC (H.264)"
+            onStatus("تهيئة فك العتاد MediaCodec: مسار $trackId، دقة ${width}x${height}، مِرماز $codecName")
+
+            val format = MediaFormat.createVideoFormat(mimeType, width, height)
+            decoder = MediaCodec.createDecoderByType(mimeType)
+            decoder?.configure(format, surface, null, 0)
+            decoder?.start()
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            val chunkHeader = ByteArray(28)
+            val crcBuf = ByteArray(4)
+            var frameCount = 0L
+
+            while (isPlaying) {
+                if (!readFully(inputStream, chunkHeader)) break
 
                 val cBuf = ByteBuffer.wrap(chunkHeader).order(ByteOrder.BIG_ENDIAN)
                 val chunkType = cBuf.get()
@@ -72,17 +114,18 @@ class OpsxPlayer {
                 val payloadSize = cBuf.int
                 val storedHeaderCrc = cBuf.int
 
+                if (payloadSize <= 0 || payloadSize > 15_000_000) continue
+
                 val payload = ByteArray(payloadSize)
-                fis.read(payload)
+                if (!readFully(inputStream, payload)) break
 
-                val storedPayloadCrcBuf = ByteArray(4)
-                fis.read(storedPayloadCrcBuf)
-                val storedPayloadCrc = ByteBuffer.wrap(storedPayloadCrcBuf).order(ByteOrder.BIG_ENDIAN).int
+                if (!readFully(inputStream, crcBuf)) break
+                val storedPayloadCrc = ByteBuffer.wrap(crcBuf).order(ByteOrder.BIG_ENDIAN).int
 
-                // فحص CRC32 عبر محرك Rust السريع
+                // فحص النزاهة السريع عبر Rust JNI
                 val isPayloadValid = OpsxNativeBridge.verify(payload, storedPayloadCrc)
                 if (!isPayloadValid) {
-                    onStatus("تحذير: تلف في فحص CRC للمقطع عند PTS=$pts")
+                    onStatus("تنبيه: تم رفض إطار تالف CRC عند PTS=$pts")
                     continue
                 }
 
@@ -97,23 +140,32 @@ class OpsxPlayer {
 
                 val outIndex = decoder?.dequeueOutputBuffer(bufferInfo, 10000) ?: -1
                 if (outIndex >= 0) {
-                    // render = true لعرض الإطار فوراً على الشاشة
                     decoder?.releaseOutputBuffer(outIndex, true)
+                    frameCount++
+                    if (frameCount % 60L == 0L) {
+                        onStatus("عرض مباشر: تم بث $frameCount إطار عتادياً بدون تقطيع")
+                    }
                 }
 
-                Thread.sleep(30) // محاكاة معدل الإطارات 30fps
+                if (!isLive) {
+                    Thread.sleep(30)
+                }
             }
-            onStatus("اكتمل تشغيل مقطع OPSX بنجاح.")
+            onStatus("تم إنهاء جلسة التشغيل.")
         } catch (e: Exception) {
-            onStatus("استثناء أثناء التشغيل: ${e.message}")
+            if (isPlaying) onStatus("تنبيه أثناء التشغيل: ${e.message}")
         } finally {
-            fis.close()
-            decoder?.stop()
-            decoder?.release()
+            stop()
+            try { inputStream.close() } catch (ignored: Exception) {}
         }
     }
 
     fun stop() {
         isPlaying = false
+        try {
+            decoder?.stop()
+            decoder?.release()
+        } catch (ignored: Exception) {}
+        decoder = null
     }
 }
