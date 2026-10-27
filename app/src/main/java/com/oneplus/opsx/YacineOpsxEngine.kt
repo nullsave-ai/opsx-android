@@ -9,8 +9,6 @@ import java.net.Socket
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Collections
-import java.util.LinkedHashSet
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -26,18 +24,7 @@ class YacineOpsxEngine {
     private var isRunning = false
     private var serverSocket: ServerSocket? = null
     private val clientSockets = CopyOnWriteArrayList<Socket>()
-    private val seenChunkIds = Collections.synchronizedSet(object : LinkedHashSet<String>() {
-        override fun add(element: String): Boolean {
-            if (size > 300) {
-                val it = iterator()
-                if (it.hasNext()) {
-                    it.next()
-                    it.remove()
-                }
-            }
-            return super.add(element)
-        }
-    })
+    private val seenChunkUrls = mutableSetOf<String>()
     private var basePtsCounter = 0L
     private var activePort = 8989
 
@@ -158,19 +145,17 @@ class YacineOpsxEngine {
 
         val contentType = conn.contentType ?: ""
         if (contentType.contains("mpegurl", ignoreCase = true) || resolvedUrl.contains(".m3u8", ignoreCase = true) || inputUrl.contains("/live?ch=") || inputUrl.contains("|")) {
-            // معالجة قائمة HLS ومنع تكرار أي مقطع باستهداف المعرف الفريد للقطعة
+            // معالجة قائمة HLS
             val lines = conn.inputStream.bufferedReader().readLines()
-            val rawLines = lines.filter { it.isNotBlank() && !it.startsWith("#") }
+            val chunkLines = lines.filter { it.isNotBlank() && !it.startsWith("#") && !seenChunkUrls.contains(it) }
 
-            for (rawLine in rawLines) {
+            for (rawLine in chunkLines) {
                 if (!isRunning) break
-                val actualChunkUrl = resolveChunkDirectUrl(resolvedUrl, rawLine)
-                val chunkKey = extractChunkIdentifier(actualChunkUrl)
+                seenChunkUrls.add(rawLine)
+                if (seenChunkUrls.size > 100) seenChunkUrls.clear()
 
-                if (!seenChunkIds.contains(chunkKey)) {
-                    seenChunkIds.add(chunkKey)
-                    downloadAndDemuxChunk(actualChunkUrl, onStatus)
-                }
+                val actualChunkUrl = resolveChunkDirectUrl(resolvedUrl, rawLine)
+                downloadAndDemuxChunk(actualChunkUrl, onStatus)
             }
             try { Thread.sleep(1500) } catch (ignored: Exception) {}
         } else {
@@ -239,12 +224,6 @@ class YacineOpsxEngine {
             }
         }
         return finalUrl
-    }
-
-    private fun extractChunkIdentifier(url: String): String {
-        val clean = url.substringBefore('?')
-        val filename = clean.substringAfterLast('/')
-        return if (filename.isNotBlank() && filename.contains('.')) filename else url
     }
 
     private fun downloadAndDemuxChunk(chunkUrl: String, onStatus: (String) -> Unit) {

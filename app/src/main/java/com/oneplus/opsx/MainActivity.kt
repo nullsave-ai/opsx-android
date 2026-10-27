@@ -127,24 +127,22 @@ class MainActivity : ComponentActivity() {
 
         var isFullscreen by remember { mutableStateOf(false) }
         var isLogoOverlayActive by remember { mutableStateOf(true) }
-        var isBlurOverlayActive by remember { mutableStateOf(true) }
 
         val context = this@MainActivity
         val overlayNativeBitmap = remember {
-            val croppedLogo = File("/storage/emulated/0/Oneplusapp/opsx-android/app/src/main/assets/oneplus_logo.png")
-            val externalFile = File("/storage/emulated/0/Oneplusapp/opsf_live_demo/file_00000000720881f489949e3529ed9509.png")
-            val bmp = when {
-                croppedLogo.exists() -> BitmapFactory.decodeFile(croppedLogo.absolutePath)
-                externalFile.exists() -> BitmapFactory.decodeFile(externalFile.absolutePath)
-                else -> {
+            try {
+                context.assets.open("oneplus_exact.png").use { BitmapFactory.decodeStream(it) }
+            } catch (e: Exception) {
+                try {
+                    context.assets.open("oneplus_logo.png").use { BitmapFactory.decodeStream(it) }
+                } catch (e2: Exception) {
                     try {
                         context.assets.open("logo_overlay.png").use { BitmapFactory.decodeStream(it) }
-                    } catch (ignored: Exception) {
+                    } catch (e3: Exception) {
                         null
                     }
                 }
             }
-            bmp
         }
 
         val logs by remember { logState }
@@ -161,9 +159,6 @@ class MainActivity : ComponentActivity() {
                 copyNotification = ""
             }
         }
-
-        val isChannel1or2 = testPlayerUrl.contains("1080|1") || testPlayerUrl.contains("1080|2") ||
-                            inputSourceUrl.contains("1080|1") || inputSourceUrl.contains("1080|2")
 
         Column(
             modifier = Modifier
@@ -299,65 +294,49 @@ class MainActivity : ComponentActivity() {
                                     }
                                     addView(tv)
 
-                                    // 2. غطاء شعار one+ في الركن العلوي الأيمن فوق بين سبورت بدقة تامة
-                                    val logoView = ImageView(ctx).apply {
-                                        tag = "logo_overlay"
-                                        scaleType = ImageView.ScaleType.FIT_XY
-                                        if (overlayNativeBitmap != null) {
-                                            setImageBitmap(overlayNativeBitmap)
-                                        }
-                                    }
-                                    addView(logoView)
-
-                                    // 3. طبقة تمويه نص ياسين تيفي في أقصى اليسار العلوي
-                                    val blurView = View(ctx).apply {
-                                        tag = "blur_overlay"
+                                    // 2. غطاء شعار one+ في الركن العلوي الأيمن فوق بين سبورت بدقة تامة وبخلفية تحجب شعار بين
+                                    val logoContainer = FrameLayout(ctx).apply {
+                                        tag = "logo_overlay_container"
                                         background = GradientDrawable().apply {
                                             shape = GradientDrawable.RECTANGLE
                                             cornerRadius = dpToPx(ctx, 4).toFloat()
-                                            colors = intArrayOf(
-                                                AndroidColor.parseColor("#F20B0E14"),
-                                                AndroidColor.parseColor("#E6141824")
-                                            )
-                                            setStroke(dpToPx(ctx, 1), AndroidColor.parseColor("#402979FF"))
+                                            setColor(AndroidColor.parseColor("#E60A0D14"))
                                         }
+                                        setPadding(dpToPx(ctx, 3), dpToPx(ctx, 2), dpToPx(ctx, 3), dpToPx(ctx, 2))
+
+                                        val iv = ImageView(ctx).apply {
+                                            tag = "logo_image"
+                                            scaleType = ImageView.ScaleType.FIT_CENTER
+                                            if (overlayNativeBitmap != null) {
+                                                setImageBitmap(overlayNativeBitmap)
+                                            }
+                                        }
+                                        addView(iv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                                     }
-                                    addView(blurView)
+                                    addView(logoContainer)
                                 }
                             },
                             update = { container ->
                                 val ctx = container.context
 
-                                // تحديث موضع وحجم غطاء one+
-                                val logoView = container.findViewWithTag<ImageView>("logo_overlay")
-                                if (logoView != null) {
-                                    val w = if (isFullscreen) dpToPx(ctx, 115) else dpToPx(ctx, 75)
-                                    val h = if (isFullscreen) dpToPx(ctx, 36) else dpToPx(ctx, 24)
-                                    val topM = if (isFullscreen) dpToPx(ctx, 14) else dpToPx(ctx, 6)
-                                    val endM = if (isFullscreen) dpToPx(ctx, 18) else dpToPx(ctx, 8)
+                                // تحديث موضع وحجم غطاء one+ فوق بين سبورت
+                                val logoContainer = container.findViewWithTag<FrameLayout>("logo_overlay_container")
+                                if (logoContainer != null) {
+                                    val iv = logoContainer.findViewWithTag<ImageView>("logo_image")
+                                    if (iv != null && overlayNativeBitmap != null && iv.drawable == null) {
+                                        iv.setImageBitmap(overlayNativeBitmap)
+                                    }
+                                    val w = if (isFullscreen) dpToPx(ctx, 135) else dpToPx(ctx, 92)
+                                    val h = if (isFullscreen) dpToPx(ctx, 40) else dpToPx(ctx, 28)
+                                    val topM = if (isFullscreen) dpToPx(ctx, 12) else dpToPx(ctx, 6)
+                                    val endM = if (isFullscreen) dpToPx(ctx, 16) else dpToPx(ctx, 8)
 
                                     val lp = FrameLayout.LayoutParams(w, h).apply {
                                         gravity = Gravity.TOP or Gravity.END
                                         setMargins(0, topM, endM, 0)
                                     }
-                                    logoView.layoutParams = lp
-                                    logoView.visibility = if (isLogoOverlayActive && isChannel1or2 && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
-                                }
-
-                                // تحديث موضع وحجم طبقة تمويه نص ياسين
-                                val blurView = container.findViewWithTag<View>("blur_overlay")
-                                if (blurView != null) {
-                                    val w = if (isFullscreen) dpToPx(ctx, 95) else dpToPx(ctx, 65)
-                                    val h = if (isFullscreen) dpToPx(ctx, 26) else dpToPx(ctx, 18)
-                                    val topM = if (isFullscreen) dpToPx(ctx, 14) else dpToPx(ctx, 6)
-                                    val startM = if (isFullscreen) dpToPx(ctx, 14) else dpToPx(ctx, 8)
-
-                                    val lp = FrameLayout.LayoutParams(w, h).apply {
-                                        gravity = Gravity.TOP or Gravity.START
-                                        setMargins(startM, topM, 0, 0)
-                                    }
-                                    blurView.layoutParams = lp
-                                    blurView.visibility = if (isBlurOverlayActive && isChannel1or2 && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
+                                    logoContainer.layoutParams = lp
+                                    logoContainer.visibility = if (isLogoOverlayActive && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
                                 }
                             },
                             modifier = Modifier.fillMaxSize()
@@ -669,7 +648,7 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            // أزرار التحكم في وضع ملء الشاشة وتغطية الشعار والتمويه
+                            // أزرار التحكم في وضع ملء الشاشة وتغطية الشعار
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -680,7 +659,7 @@ class MainActivity : ComponentActivity() {
                                     shape = RoundedCornerShape(6.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
                                 ) {
-                                    Text("عرض ملء الشاشة", fontSize = 10.sp, color = Color.White)
+                                    Text("عرض ملء الشاشة", fontSize = 11.sp, color = Color.White)
                                 }
 
                                 Button(
@@ -696,25 +675,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Text(
                                         text = if (isLogoOverlayActive) "شعار one+: مفعل" else "شعار one+: معطل",
-                                        fontSize = 10.sp,
-                                        color = Color.White
-                                    )
-                                }
-
-                                Button(
-                                    onClick = {
-                                        isBlurOverlayActive = !isBlurOverlayActive
-                                        copyNotification = if (isBlurOverlayActive) "تم تفعيل تمويه نص ياسين" else "تم تعطيل تمويه النص"
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isBlurOverlayActive) Color(0xFF1565C0) else Color(0xFF263238)
-                                    )
-                                ) {
-                                    Text(
-                                        text = if (isBlurOverlayActive) "تمويه ياسين: مفعل" else "تمويه ياسين: معطل",
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         color = Color.White
                                     )
                                 }

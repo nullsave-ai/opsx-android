@@ -204,11 +204,8 @@ class OpsxPlayer {
             val codecName = if (codecId.toInt() == 0x0002) "HEVC (H.265)" else "AVC (H.264)"
             onStatus("تهيئة فك العتاد MediaCodec: دقة ${width}x${height}، مِرماز $codecName")
 
-            // 1. تهيئة مفكك الفيديو بتقنيات Low-Latency الحديثة لمنع التشويش أثناء حركة الكاميرا السريعة
-            val vFormat = MediaFormat.createVideoFormat(mimeType, width, height).apply {
-                try { setInteger(MediaFormat.KEY_LOW_LATENCY, 1) } catch (ignored: Exception) {}
-                try { setInteger(MediaFormat.KEY_PRIORITY, 0) } catch (ignored: Exception) {}
-            }
+            // 1. تهيئة مفكك الفيديو
+            val vFormat = MediaFormat.createVideoFormat(mimeType, width, height)
             videoDecoder = MediaCodec.createDecoderByType(mimeType).apply {
                 configure(vFormat, surface, null, 0)
                 start()
@@ -290,13 +287,7 @@ class OpsxPlayer {
                     try {
                         val packet = videoQueue.poll(20, TimeUnit.MILLISECONDS)
                         if (packet != null) {
-                            var inIndex = vDecoder.dequeueInputBuffer(8000)
-                            var retries = 0
-                            while (inIndex < 0 && isPlaying && retries < 3) {
-                                try { Thread.sleep(2) } catch (ignored: Exception) {}
-                                inIndex = vDecoder.dequeueInputBuffer(4000)
-                                retries++
-                            }
+                            val inIndex = vDecoder.dequeueInputBuffer(8000)
                             if (inIndex >= 0) {
                                 val inBuf = vDecoder.getInputBuffer(inIndex)
                                 inBuf?.clear()
