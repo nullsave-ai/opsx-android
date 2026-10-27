@@ -2,33 +2,28 @@ name: Build OPSX Android APK
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ master, main ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build APK with Rust Core and Kotlin
+    name: Build OPSX Hybrid APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Java JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26b
-          add-to-path: true
-
-      - name: Set up Rust Toolchain
+      - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
@@ -36,20 +31,27 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
 
-      - name: Build Rust Native Core for Android ABIs
+      - name: Build Rust Native Engine (libopsx_core.so)
         run: |
           cd app/src/main/rust
+          export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125
           cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android -o ../jniLibs build --release
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-      - name: Build Android Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build Debug APK
+        run: |
+          gradle assembleDebug --stacktrace
+          mkdir -p dist
+          find app/build/outputs/apk/debug/ -name "*.apk" -exec cp {} dist/opsx-player.apk \;
+          ls -lh dist/
 
-      - name: Upload APK Artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OPSX-Player-Debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: opsx-player-apk
+          path: dist/*.apk
           retention-days: 14
