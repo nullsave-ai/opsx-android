@@ -268,6 +268,7 @@ class MainActivity : ComponentActivity() {
                         AndroidView(
                             factory = { ctx ->
                                 FrameLayout(ctx).apply {
+                                    layoutDirection = View.LAYOUT_DIRECTION_LTR
                                     layoutParams = FrameLayout.LayoutParams(
                                         FrameLayout.LayoutParams.MATCH_PARENT,
                                         FrameLayout.LayoutParams.MATCH_PARENT
@@ -294,49 +295,38 @@ class MainActivity : ComponentActivity() {
                                     }
                                     addView(tv)
 
-                                    // 2. غطاء شعار one+ في الركن العلوي الأيمن فوق بين سبورت بدقة تامة وبخلفية تحجب شعار بين
-                                    val logoContainer = FrameLayout(ctx).apply {
-                                        tag = "logo_overlay_container"
-                                        background = GradientDrawable().apply {
-                                            shape = GradientDrawable.RECTANGLE
-                                            cornerRadius = dpToPx(ctx, 4).toFloat()
-                                            setColor(AndroidColor.parseColor("#E60A0D14"))
+                                    // 2. غطاء شعار one+ شفاف بصيغة PNG الأصلية بدون أي خلفية في الركن العلوي الأيمن فوق بين سبورت
+                                    val logoView = ImageView(ctx).apply {
+                                        tag = "logo_image"
+                                        scaleType = ImageView.ScaleType.FIT_CENTER
+                                        if (overlayNativeBitmap != null) {
+                                            setImageBitmap(overlayNativeBitmap)
                                         }
-                                        setPadding(dpToPx(ctx, 3), dpToPx(ctx, 2), dpToPx(ctx, 3), dpToPx(ctx, 2))
-
-                                        val iv = ImageView(ctx).apply {
-                                            tag = "logo_image"
-                                            scaleType = ImageView.ScaleType.FIT_CENTER
-                                            if (overlayNativeBitmap != null) {
-                                                setImageBitmap(overlayNativeBitmap)
-                                            }
-                                        }
-                                        addView(iv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                                     }
-                                    addView(logoContainer)
+                                    addView(logoView)
                                 }
                             },
                             update = { container ->
                                 val ctx = container.context
+                                container.layoutDirection = View.LAYOUT_DIRECTION_LTR
 
-                                // تحديث موضع وحجم غطاء one+ فوق بين سبورت
-                                val logoContainer = container.findViewWithTag<FrameLayout>("logo_overlay_container")
-                                if (logoContainer != null) {
-                                    val iv = logoContainer.findViewWithTag<ImageView>("logo_image")
-                                    if (iv != null && overlayNativeBitmap != null && iv.drawable == null) {
-                                        iv.setImageBitmap(overlayNativeBitmap)
+                                // تحديث موضع وحجم غطاء one+ الشفاف في أقصى اليمين فوق بين سبورت (بدون أي خلفية)
+                                val logoView = container.findViewWithTag<ImageView>("logo_image")
+                                if (logoView != null) {
+                                    if (overlayNativeBitmap != null && logoView.drawable == null) {
+                                        logoView.setImageBitmap(overlayNativeBitmap)
                                     }
                                     val w = if (isFullscreen) dpToPx(ctx, 135) else dpToPx(ctx, 92)
                                     val h = if (isFullscreen) dpToPx(ctx, 40) else dpToPx(ctx, 28)
                                     val topM = if (isFullscreen) dpToPx(ctx, 12) else dpToPx(ctx, 6)
-                                    val endM = if (isFullscreen) dpToPx(ctx, 16) else dpToPx(ctx, 8)
+                                    val rightM = if (isFullscreen) dpToPx(ctx, 16) else dpToPx(ctx, 8)
 
                                     val lp = FrameLayout.LayoutParams(w, h).apply {
-                                        gravity = Gravity.TOP or Gravity.END
-                                        setMargins(0, topM, endM, 0)
+                                        gravity = Gravity.TOP or Gravity.RIGHT
+                                        setMargins(0, topM, rightM, 0)
                                     }
-                                    logoContainer.layoutParams = lp
-                                    logoContainer.visibility = if (isLogoOverlayActive && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
+                                    logoView.layoutParams = lp
+                                    logoView.visibility = if (isLogoOverlayActive && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
                                 }
                             },
                             modifier = Modifier.fillMaxSize()
