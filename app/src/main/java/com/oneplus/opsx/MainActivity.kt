@@ -127,6 +127,7 @@ class MainActivity : ComponentActivity() {
 
         var isFullscreen by remember { mutableStateOf(false) }
         var isLogoOverlayActive by remember { mutableStateOf(true) }
+        var isStreamBurnActive by remember { mutableStateOf(false) }
 
         val context = this@MainActivity
         val overlayNativeBitmap = remember {
@@ -310,21 +311,22 @@ class MainActivity : ComponentActivity() {
                                 val ctx = container.context
                                 container.layoutDirection = View.LAYOUT_DIRECTION_LTR
 
-                                // تحديث موضع وحجم غطاء one+ الشفاف في أقصى اليمين فوق بين سبورت (بدون أي خلفية)
+                                // تحديث موضع وحجم غطاء one+ الشفاف في أقصى اليمين فوق بين سبورت بدقة 100% متطابقة
                                 val logoView = container.findViewWithTag<ImageView>("logo_image")
                                 if (logoView != null) {
                                     if (overlayNativeBitmap != null && logoView.drawable == null) {
                                         logoView.setImageBitmap(overlayNativeBitmap)
                                     }
-                                    val w = if (isFullscreen) dpToPx(ctx, 135) else dpToPx(ctx, 92)
-                                    val h = if (isFullscreen) dpToPx(ctx, 40) else dpToPx(ctx, 28)
-                                    val topM = if (isFullscreen) dpToPx(ctx, 12) else dpToPx(ctx, 6)
-                                    val rightM = if (isFullscreen) dpToPx(ctx, 16) else dpToPx(ctx, 8)
+                                    val w = if (isFullscreen) dpToPx(ctx, 120) else dpToPx(ctx, 65)
+                                    val h = if (isFullscreen) dpToPx(ctx, 38) else dpToPx(ctx, 21)
+                                    val topM = if (isFullscreen) dpToPx(ctx, 4) else dpToPx(ctx, 2)
+                                    val rightM = if (isFullscreen) dpToPx(ctx, 10) else dpToPx(ctx, 6)
 
                                     val lp = FrameLayout.LayoutParams(w, h).apply {
                                         gravity = Gravity.TOP or Gravity.RIGHT
                                         setMargins(0, topM, rightM, 0)
                                     }
+                                    logoView.scaleType = ImageView.ScaleType.FIT_XY
                                     logoView.layoutParams = lp
                                     logoView.visibility = if (isLogoOverlayActive && (isPlayerRunning || isLocalPlaying)) View.VISIBLE else View.GONE
                                 }
@@ -497,15 +499,65 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "نمط إعادة البث وتوليد الرابط:",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (!isStreamBurnActive) Color(0xFF1565C0) else Color(0xFF1E2433),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { isStreamBurnActive = false }
+                                ) {
+                                    Text(
+                                        text = "1. مباشر فائق (بدون حرق)",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(vertical = 6.dp),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isStreamBurnActive) Color(0xFF1565C0) else Color(0xFF1E2433),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { isStreamBurnActive = true }
+                                ) {
+                                    Text(
+                                        text = "2. إعادة بث مع حرق الشعار",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(vertical = 6.dp),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(10.dp))
 
                             Button(
                                 onClick = {
                                     if (!isServerRunning) {
                                         isServerRunning = true
-                                        updateLog("بدء تشغيل خادم OPSX وتحويل القناة [$inputSourceUrl]...")
+                                        val modeDesc = if (isStreamBurnActive) "إعادة بث مع حرق الشعار في الفيديو" else "إعادة بث مباشر فائق بدون حرق"
+                                        updateLog("بدء تشغيل خادم OPSX وتحويل القناة [$inputSourceUrl] ($modeDesc)...")
                                         yacineEngine.startStream(
                                             targetUrl = inputSourceUrl,
+                                            burnWatermark = isStreamBurnActive,
                                             onUrlReady = { url ->
                                                 generatedOpsxUrl = url
                                                 testPlayerUrl = inputSourceUrl
@@ -569,6 +621,47 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
 
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (!isStreamBurnActive) Color(0xFF1565C0) else Color(0xFF1E2433),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { isStreamBurnActive = false }
+                                ) {
+                                    Text(
+                                        text = "دفق مباشر (بدون حرق)",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(vertical = 5.dp),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isStreamBurnActive) Color(0xFF1565C0) else Color(0xFF1E2433),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { isStreamBurnActive = true }
+                                ) {
+                                    Text(
+                                        text = "إعادة بث (مع حرق الشعار)",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(vertical = 5.dp),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(6.dp))
 
                             // أزرار تشغيل المشغل
@@ -587,6 +680,7 @@ class MainActivity : ComponentActivity() {
                                                 updateLog("تحويل وتوجيه المصدر [$trimmedUrl] إلى دفق OPSX الحي...")
                                                 yacineEngine.startStream(
                                                     targetUrl = trimmedUrl,
+                                                    burnWatermark = isStreamBurnActive,
                                                     onUrlReady = { u -> generatedOpsxUrl = u },
                                                     onStatus = { s -> updateLog(s) }
                                                 )

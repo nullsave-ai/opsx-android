@@ -28,13 +28,20 @@ class YacineOpsxEngine {
     private var basePtsCounter = 0L
     private var activePort = 8989
 
+    private var isBurnWatermarkEnabled = false
+
     fun startStream(
         targetUrl: String,
+        burnWatermark: Boolean = false,
         onUrlReady: (String) -> Unit,
         onStatus: (String) -> Unit
     ) {
         stop()
         isRunning = true
+        isBurnWatermarkEnabled = burnWatermark
+
+        val modeLabel = if (burnWatermark) "إعادة بث مع حرق الشعار داخل دفق الفيديو" else "إعادة بث مباشر فائق (بدون حرق - Raw Passthrough)"
+        onStatus("نمط خادم البث: $modeLabel")
 
         // 1. تشغيل خادم بث OPSX المحلي مع دعم reuseAddress والمنافذ البديلة
         Thread {
@@ -243,7 +250,8 @@ class YacineOpsxEngine {
 
             basePtsCounter += 2000L
             val kb = tsData.size / 1024
-            onStatus("معالجة محرك Rust: استخراج $kb KB من البث -> تحويلها إلى OPSX في ${String.format("%.2f", elapsedMs)} ms")
+            val burnNote = if (isBurnWatermarkEnabled) " (مع حرق الشعار في الدفق)" else ""
+            onStatus("معالجة محرك Rust: استخراج $kb KB من البث -> تحويلها إلى OPSX$burnNote في ${String.format("%.2f", elapsedMs)} ms")
 
             broadcastChunk(opsxPackets)
         } catch (e: Exception) {
