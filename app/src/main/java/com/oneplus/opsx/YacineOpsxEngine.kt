@@ -3,6 +3,7 @@ package com.oneplus.opsx
 import android.util.Base64
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
@@ -25,6 +26,7 @@ class YacineOpsxEngine {
     private val clientSockets = CopyOnWriteArrayList<Socket>()
     private val seenChunkUrls = mutableSetOf<String>()
     private var basePtsCounter = 0L
+    private var activePort = 8989
 
     fun startStream(
         targetUrl: String,
@@ -34,13 +36,32 @@ class YacineOpsxEngine {
         stop()
         isRunning = true
 
-        // 1. تشغيل خادم بث OPSX المحلي على المنفذ 8989
+        // 1. تشغيل خادم بث OPSX المحلي مع دعم reuseAddress والمنافذ البديلة
         Thread {
             try {
-                serverSocket = ServerSocket(8989)
-                val localOpsxUrl = "http://127.0.0.1:8989/live.opsx"
+                var sSocket: ServerSocket? = null
+                for (p in listOf(8989, 8990, 8991, 8992, 8993)) {
+                    try {
+                        sSocket = ServerSocket().apply {
+                            reuseAddress = true
+                            bind(InetSocketAddress(p))
+                        }
+                        activePort = p
+                        break
+                    } catch (e: Exception) {
+                        // منفذ مشغول، تجربة المنفذ التالي
+                    }
+                }
+
+                if (sSocket == null) {
+                    onStatus("خطأ: تعذر حجز منفذ محلي لخادم OPSX")
+                    return@Thread
+                }
+
+                serverSocket = sSocket
+                val localOpsxUrl = "http://127.0.0.1:$activePort/live.opsx"
                 onUrlReady(localOpsxUrl)
-                onStatus("خادم OPSX المحلي نشط على المنفذ 8989 (نواة Rust الأصلية متصلة)")
+                onStatus("خادم OPSX المحلي نشط على المنفذ $activePort (نواة Rust الأصلية متصلة)")
 
                 while (isRunning) {
                     val client = serverSocket?.accept() ?: break
@@ -117,7 +138,7 @@ class YacineOpsxEngine {
         val resolvedUrl = resolveTargetUrl(inputUrl)
 
         val conn = URL(resolvedUrl).openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         conn.setRequestProperty("Referer", "https://yacineapp.tv/")
         conn.connectTimeout = 8000
         conn.readTimeout = 8000
@@ -208,7 +229,7 @@ class YacineOpsxEngine {
     private fun downloadAndDemuxChunk(chunkUrl: String, onStatus: (String) -> Unit) {
         try {
             val chunkConn = URL(chunkUrl).openConnection() as HttpURLConnection
-            chunkConn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+            chunkConn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             chunkConn.setRequestProperty("Referer", "https://yacineapp.tv/")
             chunkConn.connectTimeout = 7000
             chunkConn.readTimeout = 7000
