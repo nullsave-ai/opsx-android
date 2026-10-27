@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">OPSX Streamer</string>
+    <string name="btn_record_30s">تسجيل 30 ثانية OPSX</string>
+    <string name="btn_stop_record">إيقاف التسجيل</string>
+    <string name="btn_play_opsx">تشغيل مقطع OPSX</string>
+    <string name="btn_live_broadcast">بث مباشر للشبكة</string>
+    <string name="status_ready">النظام جاهز - محرك Rust متصل</string>
+</resources>
