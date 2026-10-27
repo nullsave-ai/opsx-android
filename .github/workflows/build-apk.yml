@@ -34,7 +34,6 @@ jobs:
       - name: Build Rust Native Engine (libopsx_core.so)
         run: |
           cd app/src/main/rust
-          export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125
           cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android -o ../jniLibs build --release
 
       - name: Setup Gradle
