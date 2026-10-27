@@ -9,6 +9,8 @@ import java.net.Socket
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Collections
+import java.util.LinkedHashSet
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -24,7 +26,18 @@ class YacineOpsxEngine {
     private var isRunning = false
     private var serverSocket: ServerSocket? = null
     private val clientSockets = CopyOnWriteArrayList<Socket>()
-    private val seenChunkUrls = mutableSetOf<String>()
+    private val seenChunkUrls = Collections.synchronizedSet(object : LinkedHashSet<String>() {
+        override fun add(element: String): Boolean {
+            if (size > 300) {
+                val it = iterator()
+                if (it.hasNext()) {
+                    it.next()
+                    it.remove()
+                }
+            }
+            return super.add(element)
+        }
+    })
     private var basePtsCounter = 0L
     private var activePort = 8989
 
@@ -152,7 +165,6 @@ class YacineOpsxEngine {
             for (rawLine in chunkLines) {
                 if (!isRunning) break
                 seenChunkUrls.add(rawLine)
-                if (seenChunkUrls.size > 100) seenChunkUrls.clear()
 
                 val actualChunkUrl = resolveChunkDirectUrl(resolvedUrl, rawLine)
                 downloadAndDemuxChunk(actualChunkUrl, onStatus)

@@ -5,14 +5,22 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
+import android.graphics.SurfaceTexture
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.view.SurfaceView
+import android.view.Gravity
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,8 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -48,7 +54,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var yacineEngine: YacineOpsxEngine
 
     private var previewView: PreviewView? = null
-    private var playbackSurfaceView: SurfaceView? = null
+    private var activePlaybackSurface: Surface? = null
     private var activePlaybackJob: Job? = null
 
     private val requestPermissionsLauncher = registerForActivityResult(
@@ -100,6 +106,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun dpToPx(context: Context, dp: Int): Int {
+        return (dp * context.resources.displayMetrics.density).toInt()
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun OpsxMainScreen() {
@@ -116,10 +126,11 @@ class MainActivity : ComponentActivity() {
         var copyNotification by remember { mutableStateOf("") }
 
         var isFullscreen by remember { mutableStateOf(false) }
-        var isOverlayActive by remember { mutableStateOf(true) }
+        var isLogoOverlayActive by remember { mutableStateOf(true) }
+        var isBlurOverlayActive by remember { mutableStateOf(true) }
 
         val context = this@MainActivity
-        val overlayBitmap = remember {
+        val overlayNativeBitmap = remember {
             val externalFile = File("/storage/emulated/0/Oneplusapp/opsf_live_demo/file_00000000720881f489949e3529ed9509.png")
             val bmp = if (externalFile.exists()) {
                 BitmapFactory.decodeFile(externalFile.absolutePath)
@@ -130,7 +141,7 @@ class MainActivity : ComponentActivity() {
                     null
                 }
             }
-            bmp?.asImageBitmap()
+            bmp
         }
 
         val logs by remember { logState }
@@ -148,7 +159,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // تحديد ما إذا كان البث الحالي هو القناة الأولى أو الثانية لتطبيق تغطية الشعار
+        // تفعيل الغطاء تلقائياً لقنوات ياسين الأولى والثانية
         val isChannel1or2 = testPlayerUrl.contains("1080|1") || testPlayerUrl.contains("1080|2") ||
                             inputSourceUrl.contains("1080|1") || inputSourceUrl.contains("1080|2")
 
@@ -164,28 +175,79 @@ class MainActivity : ComponentActivity() {
             ) {
                 AndroidView(
                     factory = { ctx ->
-                        SurfaceView(ctx).apply {
-                            setZOrderMediaOverlay(true)
-                            playbackSurfaceView = this
+                        FrameLayout(ctx).apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT
+                            )
+
+                            // 1. عارض الفيديو عتادياً بتقنية TextureView
+                            val tv = TextureView(ctx).apply {
+                                layoutParams = FrameLayout.LayoutParams(
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                    FrameLayout.LayoutParams.MATCH_PARENT
+                                )
+                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                        activePlaybackSurface = Surface(st)
+                                    }
+                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                        activePlaybackSurface?.release()
+                                        activePlaybackSurface = null
+                                        return true
+                                    }
+                                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                                }
+                            }
+                            addView(tv)
+
+                            // 2. غطاء شعار بين سبورت في الركن العلوي الأيمن بدقة تامة
+                            val logoOverlayView = ImageView(ctx).apply {
+                                val w = dpToPx(ctx, 150)
+                                val h = dpToPx(ctx, 48)
+                                val topM = dpToPx(ctx, 16)
+                                val endM = dpToPx(ctx, 22)
+                                layoutParams = FrameLayout.LayoutParams(w, h).apply {
+                                    gravity = Gravity.TOP or Gravity.END
+                                    setMargins(0, topM, endM, 0)
+                                }
+                                scaleType = ImageView.ScaleType.FIT_XY
+                                if (overlayNativeBitmap != null) {
+                                    setImageBitmap(overlayNativeBitmap)
+                                }
+                                visibility = if (isLogoOverlayActive && isChannel1or2) View.VISIBLE else View.GONE
+                            }
+                            addView(logoOverlayView)
+
+                            // 3. طبقة تمويه وتشويش نص ياسين تيفي في أقصى اليسار العلوي
+                            val yacineBlurView = View(ctx).apply {
+                                val w = dpToPx(ctx, 210)
+                                val h = dpToPx(ctx, 44)
+                                val topM = dpToPx(ctx, 16)
+                                val startM = dpToPx(ctx, 18)
+                                layoutParams = FrameLayout.LayoutParams(w, h).apply {
+                                    gravity = Gravity.TOP or Gravity.START
+                                    setMargins(startM, topM, 0, 0)
+                                }
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.RECTANGLE
+                                    cornerRadius = dpToPx(ctx, 6).toFloat()
+                                    orientation = GradientDrawable.Orientation.LEFT_RIGHT
+                                    colors = intArrayOf(
+                                        AndroidColor.parseColor("#E60B0E14"),
+                                        AndroidColor.parseColor("#D9141824"),
+                                        AndroidColor.parseColor("#B30B0E14")
+                                    )
+                                    setStroke(dpToPx(ctx, 1), AndroidColor.parseColor("#402979FF"))
+                                }
+                                visibility = if (isBlurOverlayActive && isChannel1or2) View.VISIBLE else View.GONE
+                            }
+                            addView(yacineBlurView)
                         }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-
-                // تغطية شعار بين سبورت في الركن العلوي الأيمن بدقة
-                if (isChannel1or2 && isOverlayActive && overlayBitmap != null) {
-                    Image(
-                        bitmap = overlayBitmap,
-                        contentDescription = "تغطية شعار beIN",
-                        contentScale = ContentScale.FillBounds,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 16.dp, end = 24.dp)
-                            .width(135.dp)
-                            .height(42.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                    )
-                }
 
                 // زر الخروج من وضع ملء الشاشة
                 Surface(
@@ -507,7 +569,7 @@ class MainActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(190.dp)
+                            .height(195.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color(0xFF141824))
                             .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp)),
@@ -523,28 +585,78 @@ class MainActivity : ComponentActivity() {
                         } else if (isPlayerRunning || isLocalPlaying) {
                             AndroidView(
                                 factory = { ctx ->
-                                    SurfaceView(ctx).apply {
-                                        setZOrderMediaOverlay(true)
-                                        playbackSurfaceView = this
+                                    FrameLayout(ctx).apply {
+                                        layoutParams = FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT
+                                        )
+
+                                        val tv = TextureView(ctx).apply {
+                                            layoutParams = FrameLayout.LayoutParams(
+                                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                                FrameLayout.LayoutParams.MATCH_PARENT
+                                            )
+                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                                    activePlaybackSurface = Surface(st)
+                                                }
+                                                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                                    activePlaybackSurface?.release()
+                                                    activePlaybackSurface = null
+                                                    return true
+                                                }
+                                                override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                                            }
+                                        }
+                                        addView(tv)
+
+                                        // غطاء شعار بين سبورت في الركن العلوي الأيمن
+                                        val logoOverlayView = ImageView(ctx).apply {
+                                            val w = dpToPx(ctx, 110)
+                                            val h = dpToPx(ctx, 35)
+                                            val topM = dpToPx(ctx, 6)
+                                            val endM = dpToPx(ctx, 10)
+                                            layoutParams = FrameLayout.LayoutParams(w, h).apply {
+                                                gravity = Gravity.TOP or Gravity.END
+                                                setMargins(0, topM, endM, 0)
+                                            }
+                                            scaleType = ImageView.ScaleType.FIT_XY
+                                            if (overlayNativeBitmap != null) {
+                                                setImageBitmap(overlayNativeBitmap)
+                                            }
+                                            visibility = if (isLogoOverlayActive && isChannel1or2) View.VISIBLE else View.GONE
+                                        }
+                                        addView(logoOverlayView)
+
+                                        // طبقة تمويه نص ياسين في أقصى اليسار
+                                        val yacineBlurView = View(ctx).apply {
+                                            val w = dpToPx(ctx, 145)
+                                            val h = dpToPx(ctx, 32)
+                                            val topM = dpToPx(ctx, 6)
+                                            val startM = dpToPx(ctx, 8)
+                                            layoutParams = FrameLayout.LayoutParams(w, h).apply {
+                                                gravity = Gravity.TOP or Gravity.START
+                                                setMargins(startM, topM, 0, 0)
+                                            }
+                                            background = GradientDrawable().apply {
+                                                shape = GradientDrawable.RECTANGLE
+                                                cornerRadius = dpToPx(ctx, 6).toFloat()
+                                                orientation = GradientDrawable.Orientation.LEFT_RIGHT
+                                                colors = intArrayOf(
+                                                    AndroidColor.parseColor("#E60B0E14"),
+                                                    AndroidColor.parseColor("#D9141824"),
+                                                    AndroidColor.parseColor("#B30B0E14")
+                                                )
+                                                setStroke(dpToPx(ctx, 1), AndroidColor.parseColor("#402979FF"))
+                                            }
+                                            visibility = if (isBlurOverlayActive && isChannel1or2) View.VISIBLE else View.GONE
+                                        }
+                                        addView(yacineBlurView)
                                     }
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
-
-                            // تغطية شعار بين سبورت في الركن العلوي الأيمن بدقة تامة
-                            if (isChannel1or2 && isOverlayActive && overlayBitmap != null) {
-                                Image(
-                                    bitmap = overlayBitmap,
-                                    contentDescription = "تغطية شعار beIN",
-                                    contentScale = ContentScale.FillBounds,
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(top = 6.dp, end = 10.dp)
-                                        .width(96.dp)
-                                        .height(30.dp)
-                                        .clip(RoundedCornerShape(3.dp))
-                                )
-                            }
 
                             // زر ملء الشاشة العائم
                             Surface(
@@ -569,7 +681,7 @@ class MainActivity : ComponentActivity() {
                                 verticalArrangement = Arrangement.Center
                             ) {
                                 Text(
-                                    text = "شاشة اختبار البث (MediaCodec Hardware + AAC Audio)",
+                                    text = "شاشة اختبار البث (Low-Latency Hardware + AAC Audio)",
                                     color = Color(0xFFB0BEC5),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium
@@ -698,15 +810,22 @@ class MainActivity : ComponentActivity() {
                                             }
 
                                             updateLog("بدء تشغيل واختبار الدفق من: $finalPlayUrl (مزامنة عتادية متناسقة 1.0x)")
-                                            delay(300)
-                                            val holder = playbackSurfaceView?.holder
-                                            if (holder != null) {
-                                                opsxPlayer.playUrl(finalPlayUrl, holder.surface) { status ->
+                                            
+                                            // انتظار جاهزية السطح العتادي
+                                            var waitAttempts = 0
+                                            while (activePlaybackSurface == null && waitAttempts < 15) {
+                                                delay(100)
+                                                waitAttempts++
+                                            }
+
+                                            val surf = activePlaybackSurface
+                                            if (surf != null) {
+                                                opsxPlayer.playUrl(finalPlayUrl, surf) { status ->
                                                     updateLog(status)
                                                 }
                                                 isPlayerRunning = false
                                             } else {
-                                                updateLog("تنبيه: شاشة العرض غير جاهزة بعد")
+                                                updateLog("تنبيه: شاشة العرض العتادية غير جاهزة بعد")
                                                 isPlayerRunning = false
                                             }
                                         }
@@ -733,7 +852,7 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            // أزرار التحكم في وضع ملء الشاشة وتغطية الشعار
+                            // أزرار التحكم في وضع ملء الشاشة وتغطية الشعار والتمويه
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -744,23 +863,41 @@ class MainActivity : ComponentActivity() {
                                     shape = RoundedCornerShape(6.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
                                 ) {
-                                    Text("عرض ملء الشاشة", fontSize = 11.sp, color = Color.White)
+                                    Text("عرض ملء الشاشة", fontSize = 10.sp, color = Color.White)
                                 }
 
                                 Button(
                                     onClick = {
-                                        isOverlayActive = !isOverlayActive
-                                        copyNotification = if (isOverlayActive) "تم تفعيل تغطية شعار beIN" else "تم تعطيل تغطية الشعار"
+                                        isLogoOverlayActive = !isLogoOverlayActive
+                                        copyNotification = if (isLogoOverlayActive) "تم تفعيل تغطية شعار beIN" else "تم تعطيل تغطية الشعار"
                                     },
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(6.dp),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isOverlayActive) Color(0xFF1565C0) else Color(0xFF263238)
+                                        containerColor = if (isLogoOverlayActive) Color(0xFF1565C0) else Color(0xFF263238)
                                     )
                                 ) {
                                     Text(
-                                        text = if (isOverlayActive) "تغطية الشعار: مفعلة" else "تغطية الشعار: معطلة",
-                                        fontSize = 11.sp,
+                                        text = if (isLogoOverlayActive) "غطاء beIN: مفعل" else "غطاء beIN: معطل",
+                                        fontSize = 10.sp,
+                                        color = Color.White
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        isBlurOverlayActive = !isBlurOverlayActive
+                                        copyNotification = if (isBlurOverlayActive) "تم تفعيل تمويه نص ياسين" else "تم تعطيل تمويه النص"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isBlurOverlayActive) Color(0xFF1565C0) else Color(0xFF263238)
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (isBlurOverlayActive) "تمويه ياسين: مفعل" else "تمويه ياسين: معطل",
+                                        fontSize = 10.sp,
                                         color = Color.White
                                     )
                                 }
@@ -813,9 +950,14 @@ class MainActivity : ComponentActivity() {
                                             isPlayerRunning = false
                                             activePlaybackJob?.cancel()
                                             activePlaybackJob = lifecycleScope.launch {
-                                                val holder = playbackSurfaceView?.holder
-                                                if (holder != null) {
-                                                    opsxPlayer.playFile(targetFile, holder.surface) { status ->
+                                                var waitAttempts = 0
+                                                while (activePlaybackSurface == null && waitAttempts < 15) {
+                                                    delay(100)
+                                                    waitAttempts++
+                                                }
+                                                val surf = activePlaybackSurface
+                                                if (surf != null) {
+                                                    opsxPlayer.playFile(targetFile, surf) { status ->
                                                         updateLog(status)
                                                     }
                                                     isLocalPlaying = false
@@ -965,5 +1107,7 @@ class MainActivity : ComponentActivity() {
         yacineEngine.stop()
         opsxPlayer.stop()
         activePlaybackJob?.cancel()
+        activePlaybackSurface?.release()
+        activePlaybackSurface = null
     }
 }
