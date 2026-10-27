@@ -26,7 +26,7 @@ class YacineOpsxEngine {
     private var isRunning = false
     private var serverSocket: ServerSocket? = null
     private val clientSockets = CopyOnWriteArrayList<Socket>()
-    private val seenChunkUrls = Collections.synchronizedSet(object : LinkedHashSet<String>() {
+    private val seenChunkIds = Collections.synchronizedSet(object : LinkedHashSet<String>() {
         override fun add(element: String): Boolean {
             if (size > 300) {
                 val it = iterator()
@@ -158,16 +158,19 @@ class YacineOpsxEngine {
 
         val contentType = conn.contentType ?: ""
         if (contentType.contains("mpegurl", ignoreCase = true) || resolvedUrl.contains(".m3u8", ignoreCase = true) || inputUrl.contains("/live?ch=") || inputUrl.contains("|")) {
-            // معالجة قائمة HLS
+            // معالجة قائمة HLS ومنع تكرار أي مقطع باستهداف المعرف الفريد للقطعة
             val lines = conn.inputStream.bufferedReader().readLines()
-            val chunkLines = lines.filter { it.isNotBlank() && !it.startsWith("#") && !seenChunkUrls.contains(it) }
+            val rawLines = lines.filter { it.isNotBlank() && !it.startsWith("#") }
 
-            for (rawLine in chunkLines) {
+            for (rawLine in rawLines) {
                 if (!isRunning) break
-                seenChunkUrls.add(rawLine)
-
                 val actualChunkUrl = resolveChunkDirectUrl(resolvedUrl, rawLine)
-                downloadAndDemuxChunk(actualChunkUrl, onStatus)
+                val chunkKey = extractChunkIdentifier(actualChunkUrl)
+
+                if (!seenChunkIds.contains(chunkKey)) {
+                    seenChunkIds.add(chunkKey)
+                    downloadAndDemuxChunk(actualChunkUrl, onStatus)
+                }
             }
             try { Thread.sleep(1500) } catch (ignored: Exception) {}
         } else {
@@ -236,6 +239,12 @@ class YacineOpsxEngine {
             }
         }
         return finalUrl
+    }
+
+    private fun extractChunkIdentifier(url: String): String {
+        val clean = url.substringBefore('?')
+        val filename = clean.substringAfterLast('/')
+        return if (filename.isNotBlank() && filename.contains('.')) filename else url
     }
 
     private fun downloadAndDemuxChunk(chunkUrl: String, onStatus: (String) -> Unit) {

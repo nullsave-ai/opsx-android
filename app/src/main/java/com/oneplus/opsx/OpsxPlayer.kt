@@ -292,12 +292,8 @@ class OpsxPlayer {
                         if (packet != null) {
                             var inIndex = vDecoder.dequeueInputBuffer(8000)
                             var retries = 0
-                            while (inIndex < 0 && isPlaying && retries < 4) {
-                                // سحب مسبق لتفريغ منافذ الدخل وتجنب إسقاط أي إطار أثناء حركة الكاميرا السريعة
-                                val pendingOut = vDecoder.dequeueOutputBuffer(vBufInfo, 2000)
-                                if (pendingOut >= 0) {
-                                    vDecoder.releaseOutputBuffer(pendingOut, true)
-                                }
+                            while (inIndex < 0 && isPlaying && retries < 3) {
+                                try { Thread.sleep(2) } catch (ignored: Exception) {}
                                 inIndex = vDecoder.dequeueInputBuffer(4000)
                                 retries++
                             }
