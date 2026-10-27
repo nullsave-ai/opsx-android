@@ -25,12 +25,20 @@ class OpsxPlayer {
 
     @Volatile
     private var isPlaying = false
+    private var hasAudioPlayedFirstPcm = false
 
     private data class StreamPacket(
         val trackId: Int,
         val isKey: Boolean,
         val pts: Long,
         val payload: ByteArray
+    )
+
+    data class AacFrameInfo(
+        val sampleRate: Int,
+        val channelCount: Int,
+        val csd0: ByteArray,
+        val rawData: ByteArray
     )
 
     private val videoQueue = LinkedBlockingQueue<StreamPacket>(80)
@@ -69,7 +77,7 @@ class OpsxPlayer {
     }
 
     @Synchronized
-    private fun initAudioTrack(sampleRate: Int, channelCount: Int) {
+    private fun initAudioTrack(sampleRate: Int, channelCount: Int, onStatus: (String) -> Unit) {
         try {
             if (audioTrack != null) {
                 try { audioTrack?.stop() } catch (ignored: Exception) {}
@@ -79,7 +87,7 @@ class OpsxPlayer {
 
             val channelConfig = if (channelCount == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
             val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
-            val bufSize = Math.max(minBuf * 4, 65536)
+            val bufSize = if (minBuf > 0) Math.max(minBuf * 4, 32768) else 65536
 
             val at = AudioTrack.Builder()
                 .setAudioAttributes(
@@ -100,35 +108,56 @@ class OpsxPlayer {
                 .build()
 
             if (at.state == AudioTrack.STATE_INITIALIZED) {
+                try { at.setVolume(1.0f) } catch (ignored: Exception) {}
                 at.play()
                 audioTrack = at
+                onStatus("مسار الصوت جاهز للتشغيل: تردد $sampleRate Hz ستيريو عتادياً")
+            } else {
+                onStatus("خطأ في تهيئة AudioTrack: الحالة غير جاهزة")
             }
-        } catch (ignored: Exception) {}
+        } catch (e: Exception) {
+            onStatus("تنبيه في AudioTrack: ${e.message}")
+        }
     }
 
-    private fun extractAdtsFrames(payload: ByteArray): List<ByteArray> {
-        val frames = ArrayList<ByteArray>(8)
+    private fun extractRawAacFrames(payload: ByteArray): List<AacFrameInfo> {
+        val list = ArrayList<AacFrameInfo>(8)
         var offset = 0
         while (offset + 7 <= payload.size) {
             val b0 = payload[offset].toInt() and 0xFF
             val b1 = payload[offset + 1].toInt() and 0xFF
             if (b0 == 0xFF && (b1 and 0xF0) == 0xF0) {
+                val protection = b1 and 0x01
+                val headerLen = if (protection == 1) 7 else 9
+                val b2 = payload[offset + 2].toInt() and 0xFF
                 val b3 = payload[offset + 3].toInt() and 0xFF
                 val b4 = payload[offset + 4].toInt() and 0xFF
                 val b5 = payload[offset + 5].toInt() and 0xFF
                 val flen = ((b3 and 3) shl 11) or (b4 shl 3) or ((b5 ushr 5) and 7)
-                if (flen in 7..8192 && offset + flen <= payload.size) {
-                    frames.add(payload.copyOfRange(offset, offset + flen))
+
+                if (flen in headerLen..8192 && offset + flen <= payload.size) {
+                    val profile = (b2 ushr 6) and 3
+                    val aot = profile + 1
+                    val sfi = (b2 ushr 2) and 0x0F
+                    val channels = ((b2 and 1) shl 2) or ((b3 ushr 6) and 3)
+
+                    val sampleRates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+                    val sRate = if (sfi in sampleRates.indices) sampleRates[sfi] else 44100
+                    val chCount = if (channels in 1..8) channels else 2
+
+                    val csd0_0 = (((aot and 0x1F) shl 3) or ((sfi ushr 1) and 7)).toByte()
+                    val csd0_1 = (((sfi and 1) shl 7) or ((channels and 0x0F) shl 3)).toByte()
+                    val csd0 = byteArrayOf(csd0_0, csd0_1)
+
+                    val rawData = payload.copyOfRange(offset + headerLen, offset + flen)
+                    list.add(AacFrameInfo(sRate, chCount, csd0, rawData))
                     offset += flen
                     continue
                 }
             }
             offset++
         }
-        if (frames.isEmpty()) {
-            frames.add(payload)
-        }
-        return frames
+        return list
     }
 
     private suspend fun playStream(
@@ -137,6 +166,7 @@ class OpsxPlayer {
         onStatus: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         isPlaying = true
+        hasAudioPlayedFirstPcm = false
         videoQueue.clear()
         audioQueue.clear()
 
@@ -172,7 +202,7 @@ class OpsxPlayer {
 
             val mimeType = if (codecId.toInt() == 0x0002) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
             val codecName = if (codecId.toInt() == 0x0002) "HEVC (H.265)" else "AVC (H.264)"
-            onStatus("تهيئة فك العتاد MediaCodec: دقة ${width}x${height}، مِرماز $codecName + صوت ستيريو AAC")
+            onStatus("تهيئة فك العتاد MediaCodec: دقة ${width}x${height}، مِرماز $codecName")
 
             // 1. تهيئة مفكك الفيديو
             val vFormat = MediaFormat.createVideoFormat(mimeType, width, height)
@@ -181,48 +211,62 @@ class OpsxPlayer {
                 start()
             }
 
-            // 2. تهيئة مفكك الصوت ومسار الصوت
-            try {
-                val aFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 2)
-                aFormat.setInteger(MediaFormat.KEY_IS_ADTS, 1)
-                audioDecoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-                    configure(aFormat, null, null, 0)
-                    start()
-                }
-                initAudioTrack(44100, 2)
-            } catch (e: Exception) {
-                onStatus("تنبيه مفكك الصوت: ${e.message}")
-            }
-
-            // 3. خيط معالجة وتغذية الصوت (Audio Thread)
+            // 2. خيط معالجة وتغذية الصوت (Audio Thread مع دعم فك CSD-0 المباشر)
             val audioThread = Thread({
                 val aBufInfo = MediaCodec.BufferInfo()
-                val aDecoder = audioDecoder ?: return@Thread
+                var currentDecoder: MediaCodec? = null
 
                 while (isPlaying) {
                     try {
                         val packet = audioQueue.poll(20, TimeUnit.MILLISECONDS)
                         if (packet != null) {
-                            val frames = extractAdtsFrames(packet.payload)
-                            var framePtsUs = packet.pts * 1000L
-                            for (frame in frames) {
-                                var inIndex = aDecoder.dequeueInputBuffer(4000)
-                                var retries = 0
-                                while (inIndex < 0 && isPlaying && retries < 3) {
-                                    drainAudio(aDecoder, aBufInfo)
-                                    inIndex = aDecoder.dequeueInputBuffer(4000)
-                                    retries++
+                            val frames = extractRawAacFrames(packet.payload)
+                            if (frames.isNotEmpty()) {
+                                // تهيئة أو تحديث مفكك الصوت بناءً على مواصفات الإطار الأولى
+                                if (currentDecoder == null) {
+                                    val first = frames.first()
+                                    try {
+                                        val aFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, first.sampleRate, first.channelCount)
+                                        aFormat.setByteBuffer("csd-0", ByteBuffer.wrap(first.csd0))
+                                        val dec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
+                                            configure(aFormat, null, null, 0)
+                                            start()
+                                        }
+                                        currentDecoder = dec
+                                        audioDecoder = dec
+                                        initAudioTrack(first.sampleRate, first.channelCount, onStatus)
+                                        onStatus("تم تشغيل مفكك صوت AAC-LC ستيريو (${first.sampleRate} Hz) بنجاح")
+                                    } catch (e: Exception) {
+                                        onStatus("تنبيه مفكك الصوت: ${e.message}")
+                                    }
                                 }
-                                if (inIndex >= 0) {
-                                    val inBuf = aDecoder.getInputBuffer(inIndex)
-                                    inBuf?.clear()
-                                    inBuf?.put(frame)
-                                    aDecoder.queueInputBuffer(inIndex, 0, frame.size, framePtsUs, 0)
-                                    framePtsUs += 23220L // ~23.2ms per frame @ 44.1kHz
+
+                                currentDecoder?.let { dec ->
+                                    var framePtsUs = packet.pts * 1000L
+                                    for (frame in frames) {
+                                        var inIndex = dec.dequeueInputBuffer(4000)
+                                        var retries = 0
+                                        while (inIndex < 0 && isPlaying && retries < 3) {
+                                            drainAudio(dec, aBufInfo, onStatus)
+                                            inIndex = dec.dequeueInputBuffer(4000)
+                                            retries++
+                                        }
+                                        if (inIndex >= 0) {
+                                            val inBuf = dec.getInputBuffer(inIndex)
+                                            inBuf?.clear()
+                                            inBuf?.put(frame.rawData)
+                                            dec.queueInputBuffer(inIndex, 0, frame.rawData.size, framePtsUs, 0)
+                                            val frameDurUs = (1024L * 1000_000L) / frame.sampleRate
+                                            framePtsUs += frameDurUs
+                                        }
+                                    }
                                 }
                             }
                         }
-                        drainAudio(aDecoder, aBufInfo)
+
+                        currentDecoder?.let { dec ->
+                            drainAudio(dec, aBufInfo, onStatus)
+                        }
                     } catch (e: Exception) {
                         // ignore error during audio playback
                     }
@@ -230,7 +274,7 @@ class OpsxPlayer {
             }, "OPSX-AudioWorker")
             audioThread.start()
 
-            // 4. خيط معالجة وعرض الفيديو المتناسق 1.0x (Video Thread)
+            // 3. خيط معالجة وعرض الفيديو المتناسق 1.0x (Video Thread)
             val videoThread = Thread({
                 val vBufInfo = MediaCodec.BufferInfo()
                 val vDecoder = videoDecoder ?: return@Thread
@@ -290,7 +334,7 @@ class OpsxPlayer {
             }, "OPSX-VideoWorker")
             videoThread.start()
 
-            // 5. حلقة القراءة والتفكيك الرئيسية (Reader Loop)
+            // 4. حلقة القراءة والتفكيك الرئيسية (Reader Loop)
             val chunkHeader = ByteArray(28)
             val crcBuf = ByteArray(4)
 
@@ -344,21 +388,25 @@ class OpsxPlayer {
         }
     }
 
-    private fun drainAudio(aDecoder: MediaCodec, aBufInfo: MediaCodec.BufferInfo) {
+    private fun drainAudio(aDecoder: MediaCodec, aBufInfo: MediaCodec.BufferInfo, onStatus: (String) -> Unit) {
         while (isPlaying) {
             val outIndex = aDecoder.dequeueOutputBuffer(aBufInfo, 2000)
             if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 val newFmt = aDecoder.outputFormat
                 val sRate = if (newFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
                 val chCount = if (newFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
-                initAudioTrack(sRate, chCount)
+                initAudioTrack(sRate, chCount, onStatus)
             } else if (outIndex >= 0) {
                 val outBuf = aDecoder.getOutputBuffer(outIndex)
                 if (outBuf != null && aBufInfo.size > 0) {
                     val pcmData = ByteArray(aBufInfo.size)
                     outBuf.position(aBufInfo.offset)
                     outBuf.get(pcmData, 0, aBufInfo.size)
-                    audioTrack?.write(pcmData, 0, pcmData.size)
+                    val written = audioTrack?.write(pcmData, 0, pcmData.size) ?: -1
+                    if (!hasAudioPlayedFirstPcm && written > 0) {
+                        hasAudioPlayedFirstPcm = true
+                        onStatus("نجاح إخراج الصوت: بدأ ضخ دفق PCM إلى مكبر الصوت مباشرة")
+                    }
                 }
                 aDecoder.releaseOutputBuffer(outIndex, false)
             } else {
@@ -369,6 +417,7 @@ class OpsxPlayer {
 
     fun stop() {
         isPlaying = false
+        hasAudioPlayedFirstPcm = false
         videoQueue.clear()
         audioQueue.clear()
 

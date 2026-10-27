@@ -5,13 +5,14 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Bundle
-import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -112,6 +115,24 @@ class MainActivity : ComponentActivity() {
         var isLocalPlaying by remember { mutableStateOf(false) }
         var copyNotification by remember { mutableStateOf("") }
 
+        var isFullscreen by remember { mutableStateOf(false) }
+        var isOverlayActive by remember { mutableStateOf(true) }
+
+        val context = this@MainActivity
+        val overlayBitmap = remember {
+            val externalFile = File("/storage/emulated/0/Oneplusapp/opsf_live_demo/file_00000000720881f489949e3529ed9509.png")
+            val bmp = if (externalFile.exists()) {
+                BitmapFactory.decodeFile(externalFile.absolutePath)
+            } else {
+                try {
+                    context.assets.open("logo_overlay.png").use { BitmapFactory.decodeStream(it) }
+                } catch (ignored: Exception) {
+                    null
+                }
+            }
+            bmp?.asImageBitmap()
+        }
+
         val logs by remember { logState }
         val scrollState = rememberScrollState()
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -127,672 +148,799 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            // شريط العنوان
-            Row(
+        // تحديد ما إذا كان البث الحالي هو القناة الأولى أو الثانية لتطبيق تغطية الشعار
+        val isChannel1or2 = testPlayerUrl.contains("1080|1") || testPlayerUrl.contains("1080|2") ||
+                            inputSourceUrl.contains("1080|1") || inputSourceUrl.contains("1080|2")
+
+        if (isFullscreen) {
+            // ============================================
+            // وضع ملء الشاشة الكامل (Fullscreen Viewport)
+            // ============================================
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxSize()
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
             ) {
-                Column {
-                    Text(
-                        text = "منظومة OPSF / OPSX للبث الفائق",
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "كوتلن خالص 100% + معالجة Rust الأصلية بدون وسيط",
-                        color = Color(0xFF90A4AE),
-                        fontSize = 10.sp
+                AndroidView(
+                    factory = { ctx ->
+                        SurfaceView(ctx).apply {
+                            setZOrderMediaOverlay(true)
+                            playbackSurfaceView = this
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // تغطية شعار بين سبورت في الركن العلوي الأيمن بدقة
+                if (isChannel1or2 && isOverlayActive && overlayBitmap != null) {
+                    Image(
+                        bitmap = overlayBitmap,
+                        contentDescription = "تغطية شعار beIN",
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 16.dp, end = 24.dp)
+                            .width(135.dp)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(4.dp))
                     )
                 }
 
+                // زر الخروج من وضع ملء الشاشة
                 Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = if (OpsxNativeBridge.isNativeReady()) Color(0xFF1565C0) else Color(0xFFE65100)
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xCC0D47A1),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                        .clickable { isFullscreen = false }
                 ) {
                     Text(
-                        text = if (OpsxNativeBridge.isNativeReady()) "Rust JNI: متصل" else "Kotlin Fallback",
+                        text = "تصغير الشاشة والعودة للتحكم",
                         color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                     )
                 }
             }
-
-            // شريط التبويبات (الصفحة الأولى: الخادم والتوليد | الصفحة الثانية: المشغل والاختبار)
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = Color(0xFF141824),
-                contentColor = Color(0xFF2979FF),
+        } else {
+            // ============================================
+            // الواجهة العادية المتكاملة
+            // ============================================
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = {
-                        Text(
-                            text = "1. الخادم وتوليد الرابط",
-                            fontSize = 12.sp,
-                            fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selectedTab == 0) Color(0xFF00B0FF) else Color(0xFF90A4AE)
-                        )
-                    }
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = {
-                        Text(
-                            text = "2. المشغل واختبار البث",
-                            fontSize = 12.sp,
-                            fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selectedTab == 1) Color(0xFF00B0FF) else Color(0xFF90A4AE)
-                        )
-                    }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // محتوى التبويب المختار
-            if (selectedTab == 0) {
-                // ============================================
-                // التبويب 1: الخادم وتوليد رابط البث بنظام OPSX
-                // ============================================
-                Card(
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
+                // شريط العنوان
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp))
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
+                    Column {
                         Text(
-                            text = "مصدر البث (معرف قناة ياسين أو رابط M3U8/TS مخصص):",
-                            color = Color(0xFFCFD8DC),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
+                            text = "منظومة OPSF / OPSX للبث الفائق",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
                         )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        OutlinedTextField(
-                            value = inputSourceUrl,
-                            onValueChange = { inputSourceUrl = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color(0xFFECEFF1),
-                                focusedContainerColor = Color(0xFF0F121C),
-                                unfocusedContainerColor = Color(0xFF0F121C),
-                                focusedBorderColor = Color(0xFF2979FF),
-                                unfocusedBorderColor = Color(0xFF263238),
-                                cursorColor = Color(0xFF00B0FF)
-                            )
+                        Text(
+                            text = "كوتلن خالص 100% + معالجة Rust الأصلية بدون وسيط",
+                            color = Color(0xFF90A4AE),
+                            fontSize = 10.sp
                         )
+                    }
 
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        // أزرار الحافظة للمصدر
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    val clip = clipboard.primaryClip
-                                    if (clip != null && clip.itemCount > 0) {
-                                        val text = clip.getItemAt(0).text?.toString() ?: ""
-                                        if (text.isNotBlank()) {
-                                            inputSourceUrl = text
-                                            copyNotification = "تم لصق الرابط في حقل المصدر"
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
-                            ) {
-                                Text("لصق", fontSize = 11.sp, color = Color(0xFF90CAF9))
-                            }
-
-                            Button(
-                                onClick = {
-                                    val clip = ClipData.newPlainText("stream_source", inputSourceUrl)
-                                    clipboard.setPrimaryClip(clip)
-                                    copyNotification = "تم نسخ رابط المصدر"
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
-                            ) {
-                                Text("نسخ", fontSize = 11.sp, color = Color(0xFF90CAF9))
-                            }
-
-                            Button(
-                                onClick = { inputSourceUrl = "" },
-                                modifier = Modifier.weight(0.7f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2026))
-                            ) {
-                                Text("مسح", fontSize = 11.sp, color = Color(0xFFFF8A80))
-                            }
-                        }
-
-                        // أزرار القنوات السريعة
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val channels = listOf(
-                                "beIN 1" to "1080|1",
-                                "beIN 2" to "1080|2",
-                                "beIN 3" to "1080|3",
-                                "beIN Xtra" to "https://bein-xtra-bein.amagi.tv/playlist.m3u8",
-                                "Alkass 1" to "https://liveeu-gcps.alkassdigital.net/alkass1-p/main.m3u8"
-                            )
-                            channels.forEach { (name, id) ->
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (inputSourceUrl == id) Color(0xFF2979FF) else Color(0xFF1E2433),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable { inputSourceUrl = id }
-                                ) {
-                                    Text(
-                                        text = name,
-                                        color = Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 5.dp),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // زر تشغيل أو إيقاف خادم التوليد
-                        Button(
-                            onClick = {
-                                if (!isServerRunning) {
-                                    isServerRunning = true
-                                    updateLog("بدء تشغيل خادم OPSX وتحويل القناة [$inputSourceUrl]...")
-                                    yacineEngine.startStream(
-                                        targetUrl = inputSourceUrl,
-                                        onUrlReady = { url ->
-                                            generatedOpsxUrl = url
-                                            testPlayerUrl = url
-                                            updateLog("تم توليد رابط بث OPSX بنجاح: $url")
-                                        },
-                                        onStatus = { status -> updateLog(status) }
-                                    )
-                                } else {
-                                    yacineEngine.stop()
-                                    isServerRunning = false
-                                    updateLog("تم إيقاف خادم البث.")
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isServerRunning) Color(0xFFC62828) else Color(0xFF1565C0)
-                            )
-                        ) {
-                            Text(
-                                text = if (isServerRunning) "إيقاف خادم البث" else "بدء خادم البث وتوليد رابط OPSX",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        }
-
-                        // صندوق عرض الرابط الناتج وخيارات النسخ والانتقال
-                        if (generatedOpsxUrl.isNotEmpty() || isServerRunning) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Card(
-                                shape = RoundedCornerShape(8.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1420)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(1.dp, Color(0xFF2979FF), RoundedCornerShape(8.dp))
-                            ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
-                                    Text(
-                                        text = "رابط البث الناتج بنظام OPSX:",
-                                        color = Color(0xFF80D8FF),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = generatedOpsxUrl.ifEmpty { "جاري استقرار وتوليد الرابط..." },
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Button(
-                                            onClick = {
-                                                val clip = ClipData.newPlainText("opsx_live_url", generatedOpsxUrl)
-                                                clipboard.setPrimaryClip(clip)
-                                                copyNotification = "تم نسخ رابط OPSX! انتقل الآن لتبويب المشغل لتجربته"
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(6.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
-                                        ) {
-                                            Text("نسخ رابط البث الناتج", fontSize = 11.sp, color = Color.White)
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                testPlayerUrl = generatedOpsxUrl
-                                                selectedTab = 1 // الانتقال المباشر للمشغل
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(6.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
-                                        ) {
-                                            Text("الانتقال لصفحة المشغل", fontSize = 11.sp, color = Color.White)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (OpsxNativeBridge.isNativeReady()) Color(0xFF1565C0) else Color(0xFFE65100)
+                    ) {
+                        Text(
+                            text = if (OpsxNativeBridge.isNativeReady()) "Rust JNI: متصل" else "Kotlin Fallback",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
                     }
                 }
-            } else {
-                // ============================================
-                // التبويب 2: المشغل واختبار البث
-                // ============================================
-                // شاشة العرض المرئية
-                Box(
+
+                // شريط التبويبات
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = Color(0xFF141824),
+                    contentColor = Color(0xFF2979FF),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(190.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF141824))
-                        .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center
+                        .clip(RoundedCornerShape(8.dp))
                 ) {
-                    if (isRecording) {
-                        AndroidView(
-                            factory = { ctx ->
-                                PreviewView(ctx).also { previewView = it }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else if (isPlayerRunning || isLocalPlaying) {
-                        AndroidView(
-                            factory = { ctx ->
-                                SurfaceView(ctx).also { playbackSurfaceView = it }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = {
                             Text(
-                                text = "شاشة اختبار البث (MediaCodec Hardware + AAC Audio)",
-                                color = Color(0xFFB0BEC5),
+                                text = "1. الخادم وتوليد الرابط",
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "ضع رابط البث واضغط [تشغيل واختبار البث بالصوت والصورة]",
-                                color = Color(0xFF78909C),
-                                fontSize = 11.sp
+                                fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selectedTab == 0) Color(0xFF00B0FF) else Color(0xFF90A4AE)
                             )
                         }
-                    }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = {
+                            Text(
+                                text = "2. المشغل واختبار البث",
+                                fontSize = 12.sp,
+                                fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selectedTab == 1) Color(0xFF00B0FF) else Color(0xFF90A4AE)
+                            )
+                        }
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // حقل إدخال رابط الاختبار
-                Card(
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp))
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(
-                            text = "رابط البث المراد تشغيله واختباره:",
-                            color = Color(0xFFCFD8DC),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        OutlinedTextField(
-                            value = testPlayerUrl,
-                            onValueChange = { testPlayerUrl = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color(0xFFECEFF1),
-                                focusedContainerColor = Color(0xFF0F121C),
-                                unfocusedContainerColor = Color(0xFF0F121C),
-                                focusedBorderColor = Color(0xFF00B0FF),
-                                unfocusedBorderColor = Color(0xFF263238),
-                                cursorColor = Color(0xFF00B0FF)
-                            )
-                        )
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    val clip = clipboard.primaryClip
-                                    if (clip != null && clip.itemCount > 0) {
-                                        val text = clip.getItemAt(0).text?.toString() ?: ""
-                                        if (text.isNotBlank()) {
-                                            testPlayerUrl = text
-                                            copyNotification = "تم لصق الرابط في المشغل"
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
-                            ) {
-                                Text("لصق الرابط", fontSize = 11.sp, color = Color(0xFF90CAF9))
-                            }
-
-                            Button(
-                                onClick = {
-                                    if (generatedOpsxUrl.isNotEmpty()) {
-                                        testPlayerUrl = generatedOpsxUrl
-                                        copyNotification = "تم جلب رابط الخادم الحالي"
-                                    } else {
-                                        testPlayerUrl = "http://127.0.0.1:8989/live.opsx"
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
-                            ) {
-                                Text("جلب رابط الخادم", fontSize = 11.sp, color = Color(0xFF90CAF9))
-                            }
-
-                            Button(
-                                onClick = { testPlayerUrl = "" },
-                                modifier = Modifier.weight(0.7f),
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2026))
-                            ) {
-                                Text("مسح", fontSize = 11.sp, color = Color(0xFFFF8A80))
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // أزرار تشغيل المشغل مع التحويل الذكي
-                        Button(
-                            onClick = {
-                                if (!isPlayerRunning) {
-                                    isPlayerRunning = true
-                                    isLocalPlaying = false
-
-                                    activePlaybackJob?.cancel()
-                                    activePlaybackJob = lifecycleScope.launch {
-                                        val trimmedUrl = testPlayerUrl.trim()
-                                        val finalPlayUrl: String
-
-                                        // إذا كان الرابط M3U8 أو قناة ياسين، يتم تحويله تلقائياً عبر خادم OPSX الداخلي
-                                        if (trimmedUrl.contains(".m3u8") || trimmedUrl.contains("|") || trimmedUrl.contains("ch=")) {
-                                            updateLog("تحويل وتوجيه المصدر [$trimmedUrl] إلى OPSX...")
-                                            yacineEngine.startStream(
-                                                targetUrl = trimmedUrl,
-                                                onUrlReady = { u -> generatedOpsxUrl = u },
-                                                onStatus = { s -> updateLog(s) }
-                                            )
-                                            delay(1500)
-                                            finalPlayUrl = "http://127.0.0.1:8989/live.opsx"
-                                        } else {
-                                            finalPlayUrl = trimmedUrl
-                                        }
-
-                                        updateLog("بدء تشغيل واختبار الدفق من: $finalPlayUrl (مزامنة عتادية متناسقة 1.0x)")
-                                        delay(300)
-                                        val holder = playbackSurfaceView?.holder
-                                        if (holder != null) {
-                                            opsxPlayer.playUrl(finalPlayUrl, holder.surface) { status ->
-                                                updateLog(status)
-                                            }
-                                            isPlayerRunning = false
-                                        } else {
-                                            updateLog("تنبيه: شاشة العرض غير جاهزة بعد")
-                                            isPlayerRunning = false
-                                        }
-                                    }
-                                } else {
-                                    opsxPlayer.stop()
-                                    activePlaybackJob?.cancel()
-                                    isPlayerRunning = false
-                                    updateLog("تم إيقاف المشغل.")
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPlayerRunning) Color(0xFFD32F2F) else Color(0xFF1565C0)
-                            )
-                        ) {
+                // محتوى التبويب المختار
+                if (selectedTab == 0) {
+                    // التبويب 1: الخادم وتوليد رابط البث
+                    Card(
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
                             Text(
-                                text = if (isPlayerRunning) "إيقاف المشغل" else "تشغيل واختبار البث (صورة طبيعية 1.0x + صوت)",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                text = "مصدر البث (معرف قناة ياسين أو رابط M3U8/TS مخصص):",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
-                        }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
-                        // أزرار الكاميرا والتسجيل المحلي
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
-                                    if (!isRecording) {
-                                        previewView?.let { pv ->
-                                            isRecording = true
-                                            isPlayerRunning = false
-                                            updateLog("بدء تسجيل كاميرا OPSX عتادياً...")
-                                            cameraRecorder.startRecording(targetFile, pv, this@MainActivity) { status ->
-                                                updateLog(status)
+                            OutlinedTextField(
+                                value = inputSourceUrl,
+                                onValueChange = { inputSourceUrl = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color(0xFFECEFF1),
+                                    focusedContainerColor = Color(0xFF0F121C),
+                                    unfocusedContainerColor = Color(0xFF0F121C),
+                                    focusedBorderColor = Color(0xFF2979FF),
+                                    unfocusedBorderColor = Color(0xFF263238),
+                                    cursorColor = Color(0xFF00B0FF)
+                                )
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // أزرار الحافظة للمصدر
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val clip = clipboard.primaryClip
+                                        if (clip != null && clip.itemCount > 0) {
+                                            val text = clip.getItemAt(0).text?.toString() ?: ""
+                                            if (text.isNotBlank()) {
+                                                inputSourceUrl = text
+                                                copyNotification = "تم لصق الرابط في حقل المصدر"
                                             }
                                         }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
+                                ) {
+                                    Text("لصق", fontSize = 11.sp, color = Color(0xFF90CAF9))
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val clip = ClipData.newPlainText("stream_source", inputSourceUrl)
+                                        clipboard.setPrimaryClip(clip)
+                                        copyNotification = "تم نسخ رابط المصدر"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
+                                ) {
+                                    Text("نسخ", fontSize = 11.sp, color = Color(0xFF90CAF9))
+                                }
+
+                                Button(
+                                    onClick = { inputSourceUrl = "" },
+                                    modifier = Modifier.weight(0.7f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2026))
+                                ) {
+                                    Text("مسح", fontSize = 11.sp, color = Color(0xFFFF8A80))
+                                }
+                            }
+
+                            // أزرار القنوات السريعة
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                val channels = listOf(
+                                    "beIN 1" to "1080|1",
+                                    "beIN 2" to "1080|2",
+                                    "beIN 3" to "1080|3",
+                                    "beIN Xtra" to "https://bein-xtra-bein.amagi.tv/playlist.m3u8",
+                                    "Alkass 1" to "https://liveeu-gcps.alkassdigital.net/alkass1-p/main.m3u8"
+                                )
+                                channels.forEach { (name, id) ->
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (inputSourceUrl == id) Color(0xFF2979FF) else Color(0xFF1E2433),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable { inputSourceUrl = id }
+                                    ) {
+                                        Text(
+                                            text = name,
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 5.dp),
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // زر تشغيل أو إيقاف خادم التوليد
+                            Button(
+                                onClick = {
+                                    if (!isServerRunning) {
+                                        isServerRunning = true
+                                        updateLog("بدء تشغيل خادم OPSX وتحويل القناة [$inputSourceUrl]...")
+                                        yacineEngine.startStream(
+                                            targetUrl = inputSourceUrl,
+                                            onUrlReady = { url ->
+                                                generatedOpsxUrl = url
+                                                testPlayerUrl = url
+                                                updateLog("تم توليد رابط بث OPSX بنجاح: $url")
+                                            },
+                                            onStatus = { status -> updateLog(status) }
+                                        )
                                     } else {
-                                        isRecording = false
-                                        cameraRecorder.stopRecording {
-                                            updateLog("اكتمل حفظ مقطع OPSX بحجم ${targetFile.length() / 1024} KB.")
-                                        }
+                                        yacineEngine.stop()
+                                        isServerRunning = false
+                                        updateLog("تم إيقاف خادم البث.")
                                     }
                                 },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isRecording) Color(0xFFC62828) else Color(0xFF37474F)
+                                    containerColor = if (isServerRunning) Color(0xFFC62828) else Color(0xFF1565C0)
                                 )
                             ) {
                                 Text(
-                                    text = if (isRecording) "إيقاف التسجيل" else "تسجيل كاميرا OPSX",
-                                    fontSize = 11.sp,
+                                    text = if (isServerRunning) "إيقاف خادم البث" else "بدء خادم البث وتوليد رابط OPSX",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
                                     color = Color.White
                                 )
                             }
 
+                            // صندوق عرض الرابط الناتج
+                            if (generatedOpsxUrl.isNotEmpty() || isServerRunning) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Card(
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1420)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(1.dp, Color(0xFF2979FF), RoundedCornerShape(8.dp))
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Text(
+                                            text = "رابط البث الناتج بنظام OPSX:",
+                                            color = Color(0xFF80D8FF),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = generatedOpsxUrl.ifEmpty { "جاري استقرار وتوليد الرابط..." },
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    val clip = ClipData.newPlainText("opsx_live_url", generatedOpsxUrl)
+                                                    clipboard.setPrimaryClip(clip)
+                                                    copyNotification = "تم نسخ رابط OPSX! انتقل الآن لتبويب المشغل لتجربته"
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
+                                            ) {
+                                                Text("نسخ رابط البث الناتج", fontSize = 11.sp, color = Color.White)
+                                            }
+
+                                            Button(
+                                                onClick = {
+                                                    testPlayerUrl = generatedOpsxUrl
+                                                    selectedTab = 1
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
+                                            ) {
+                                                Text("الانتقال لصفحة المشغل", fontSize = 11.sp, color = Color.White)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // التبويب 2: المشغل واختبار البث
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(190.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824))
+                            .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isRecording) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    PreviewView(ctx).also { previewView = it }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else if (isPlayerRunning || isLocalPlaying) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    SurfaceView(ctx).apply {
+                                        setZOrderMediaOverlay(true)
+                                        playbackSurfaceView = this
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            // تغطية شعار بين سبورت في الركن العلوي الأيمن بدقة تامة
+                            if (isChannel1or2 && isOverlayActive && overlayBitmap != null) {
+                                Image(
+                                    bitmap = overlayBitmap,
+                                    contentDescription = "تغطية شعار beIN",
+                                    contentScale = ContentScale.FillBounds,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 6.dp, end = 10.dp)
+                                        .width(96.dp)
+                                        .height(30.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                )
+                            }
+
+                            // زر ملء الشاشة العائم
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xCC0D47A1),
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(6.dp)
+                                    .clickable { isFullscreen = true }
+                            ) {
+                                Text(
+                                    text = "ملء الشاشة",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        } else {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "شاشة اختبار البث (MediaCodec Hardware + AAC Audio)",
+                                    color = Color(0xFFB0BEC5),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "ضع رابط البث واضغط [تشغيل واختبار البث بالصوت والصورة]",
+                                    color = Color(0xFF78909C),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // حقل إدخال رابط الاختبار
+                    Card(
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFF1F263B), RoundedCornerShape(10.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "رابط البث المراد تشغيله واختباره:",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            OutlinedTextField(
+                                value = testPlayerUrl,
+                                onValueChange = { testPlayerUrl = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color(0xFFECEFF1),
+                                    focusedContainerColor = Color(0xFF0F121C),
+                                    unfocusedContainerColor = Color(0xFF0F121C),
+                                    focusedBorderColor = Color(0xFF00B0FF),
+                                    unfocusedBorderColor = Color(0xFF263238),
+                                    cursorColor = Color(0xFF00B0FF)
+                                )
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val clip = clipboard.primaryClip
+                                        if (clip != null && clip.itemCount > 0) {
+                                            val text = clip.getItemAt(0).text?.toString() ?: ""
+                                            if (text.isNotBlank()) {
+                                                testPlayerUrl = text
+                                                copyNotification = "تم لصق الرابط في المشغل"
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
+                                ) {
+                                    Text("لصق الرابط", fontSize = 11.sp, color = Color(0xFF90CAF9))
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (generatedOpsxUrl.isNotEmpty()) {
+                                            testPlayerUrl = generatedOpsxUrl
+                                            copyNotification = "تم جلب رابط الخادم الحالي"
+                                        } else {
+                                            testPlayerUrl = "http://127.0.0.1:8989/live.opsx"
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2838))
+                                ) {
+                                    Text("جلب رابط الخادم", fontSize = 11.sp, color = Color(0xFF90CAF9))
+                                }
+
+                                Button(
+                                    onClick = { testPlayerUrl = "" },
+                                    modifier = Modifier.weight(0.7f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2026))
+                                ) {
+                                    Text("مسح", fontSize = 11.sp, color = Color(0xFFFF8A80))
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // أزرار تشغيل المشغل
                             Button(
                                 onClick = {
-                                    val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
-                                    if (!isLocalPlaying) {
-                                        isLocalPlaying = true
-                                        isPlayerRunning = false
+                                    if (!isPlayerRunning) {
+                                        isPlayerRunning = true
+                                        isLocalPlaying = false
+
                                         activePlaybackJob?.cancel()
                                         activePlaybackJob = lifecycleScope.launch {
+                                            val trimmedUrl = testPlayerUrl.trim()
+                                            val finalPlayUrl: String
+
+                                            if (trimmedUrl.contains(".m3u8") || trimmedUrl.contains("|") || trimmedUrl.contains("ch=")) {
+                                                updateLog("تحويل وتوجيه المصدر [$trimmedUrl] إلى OPSX...")
+                                                yacineEngine.startStream(
+                                                    targetUrl = trimmedUrl,
+                                                    onUrlReady = { u -> generatedOpsxUrl = u },
+                                                    onStatus = { s -> updateLog(s) }
+                                                )
+                                                delay(1500)
+                                                finalPlayUrl = "http://127.0.0.1:8989/live.opsx"
+                                            } else {
+                                                finalPlayUrl = trimmedUrl
+                                            }
+
+                                            updateLog("بدء تشغيل واختبار الدفق من: $finalPlayUrl (مزامنة عتادية متناسقة 1.0x)")
+                                            delay(300)
                                             val holder = playbackSurfaceView?.holder
                                             if (holder != null) {
-                                                opsxPlayer.playFile(targetFile, holder.surface) { status ->
+                                                opsxPlayer.playUrl(finalPlayUrl, holder.surface) { status ->
                                                     updateLog(status)
                                                 }
-                                                isLocalPlaying = false
+                                                isPlayerRunning = false
                                             } else {
-                                                updateLog("شاشة العرض غير مهيأة بعد.")
+                                                updateLog("تنبيه: شاشة العرض غير جاهزة بعد")
+                                                isPlayerRunning = false
                                             }
                                         }
                                     } else {
                                         opsxPlayer.stop()
                                         activePlaybackJob?.cancel()
-                                        isLocalPlaying = false
+                                        isPlayerRunning = false
+                                        updateLog("تم إيقاف المشغل.")
                                     }
                                 },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isLocalPlaying) Color(0xFFC62828) else Color(0xFF455A64)
+                                    containerColor = if (isPlayerRunning) Color(0xFFD32F2F) else Color(0xFF1565C0)
                                 )
                             ) {
                                 Text(
-                                    text = if (isLocalPlaying) "إيقاف الملف" else "تشغيل ملف محلي",
-                                    fontSize = 11.sp,
+                                    text = if (isPlayerRunning) "إيقاف المشغل" else "تشغيل واختبار البث (صورة طبيعية 1.0x + صوت)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
                                     color = Color.White
                                 )
                             }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // أزرار التحكم في وضع ملء الشاشة وتغطية الشعار
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = { isFullscreen = true },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
+                                ) {
+                                    Text("عرض ملء الشاشة", fontSize = 11.sp, color = Color.White)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        isOverlayActive = !isOverlayActive
+                                        copyNotification = if (isOverlayActive) "تم تفعيل تغطية شعار beIN" else "تم تعطيل تغطية الشعار"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isOverlayActive) Color(0xFF1565C0) else Color(0xFF263238)
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (isOverlayActive) "تغطية الشعار: مفعلة" else "تغطية الشعار: معطلة",
+                                        fontSize = 11.sp,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // أزرار الكاميرا والتسجيل المحلي
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
+                                        if (!isRecording) {
+                                            previewView?.let { pv ->
+                                                isRecording = true
+                                                isPlayerRunning = false
+                                                updateLog("بدء تسجيل كاميرا OPSX عتادياً...")
+                                                cameraRecorder.startRecording(targetFile, pv, this@MainActivity) { status ->
+                                                    updateLog(status)
+                                                }
+                                            }
+                                        } else {
+                                            isRecording = false
+                                            cameraRecorder.stopRecording {
+                                                updateLog("اكتمل حفظ مقطع OPSX بحجم ${targetFile.length() / 1024} KB.")
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isRecording) Color(0xFFC62828) else Color(0xFF37474F)
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (isRecording) "إيقاف التسجيل" else "تسجيل كاميرا OPSX",
+                                        fontSize = 11.sp,
+                                        color = Color.White
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
+                                        if (!isLocalPlaying) {
+                                            isLocalPlaying = true
+                                            isPlayerRunning = false
+                                            activePlaybackJob?.cancel()
+                                            activePlaybackJob = lifecycleScope.launch {
+                                                val holder = playbackSurfaceView?.holder
+                                                if (holder != null) {
+                                                    opsxPlayer.playFile(targetFile, holder.surface) { status ->
+                                                        updateLog(status)
+                                                    }
+                                                    isLocalPlaying = false
+                                                } else {
+                                                    updateLog("شاشة العرض غير مهيأة بعد.")
+                                                }
+                                            }
+                                        } else {
+                                            opsxPlayer.stop()
+                                            activePlaybackJob?.cancel()
+                                            isLocalPlaying = false
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isLocalPlaying) Color(0xFFC62828) else Color(0xFF455A64)
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (isLocalPlaying) "إيقاف الملف" else "تشغيل ملف محلي",
+                                        fontSize = 11.sp,
+                                        color = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-            // شريط الإشعار
-            if (copyNotification.isNotEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = Color(0xFF0D47A1),
+                // شريط الإشعار
+                if (copyNotification.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFF0D47A1),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp)
+                    ) {
+                        Text(
+                            text = copyNotification,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                // صندوق السجل والتفاصيل الحية
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF10131B)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 4.dp)
+                        .weight(1f)
+                        .border(1.dp, Color(0xFF1C2233), RoundedCornerShape(10.dp))
                 ) {
-                    Text(
-                        text = copyNotification,
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
-            }
+                    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "سجل العمليات والتفاصيل الحية (صوت وفيديو + Rust Core):",
+                                color = Color(0xFFB0BEC5),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
 
-            // صندوق السجل والتفاصيل الحية المشترك (بدون أي لون أخضر)
-            Card(
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF10131B)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .border(1.dp, Color(0xFF1C2233), RoundedCornerShape(10.dp))
-            ) {
-                Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "سجل العمليات والتفاصيل الحية (صوت وفيديو + Rust Core):",
-                            color = Color(0xFFB0BEC5),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFF1E2838),
-                                modifier = Modifier.clickable {
-                                    val clip = ClipData.newPlainText("opsx_logs", logs)
-                                    clipboard.setPrimaryClip(clip)
-                                    copyNotification = "تم نسخ سجل العمليات كاملاً"
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF1E2838),
+                                    modifier = Modifier.clickable {
+                                        val clip = ClipData.newPlainText("opsx_logs", logs)
+                                        clipboard.setPrimaryClip(clip)
+                                        copyNotification = "تم نسخ سجل العمليات كاملاً"
+                                    }
+                                ) {
+                                    Text(
+                                        text = "نسخ السجل",
+                                        color = Color(0xFF80D8FF),
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
                                 }
-                            ) {
-                                Text(
-                                    text = "نسخ السجل",
-                                    color = Color(0xFF80D8FF),
-                                    fontSize = 10.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
 
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFF261D24),
-                                modifier = Modifier.clickable {
-                                    logState.value = "تم تفريغ السجل.\n"
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF261D24),
+                                    modifier = Modifier.clickable {
+                                        logState.value = "تم تفريغ السجل.\n"
+                                    }
+                                ) {
+                                    Text(
+                                        text = "مسح",
+                                        color = Color(0xFFFF8A80),
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
                                 }
-                            ) {
-                                Text(
-                                    text = "مسح",
-                                    color = Color(0xFFFF8A80),
-                                    fontSize = 10.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
 
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xFF090B10))
-                            .padding(6.dp)
-                            .verticalScroll(scrollState)
-                    ) {
-                        Text(
-                            text = logs,
-                            color = Color(0xFF80D8FF), // نص سماوي ثلجي أنيق - خالٍ تماماً من اللون الأخضر
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            lineHeight = 15.sp
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF090B10))
+                                .padding(6.dp)
+                                .verticalScroll(scrollState)
+                        ) {
+                            Text(
+                                text = logs,
+                                color = Color(0xFF80D8FF),
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 15.sp
+                            )
+                        }
                     }
                 }
             }
