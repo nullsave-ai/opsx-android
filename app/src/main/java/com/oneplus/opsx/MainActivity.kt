@@ -32,6 +32,8 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var cameraRecorder: CameraRecorder
     private lateinit var opsxPlayer: OpsxPlayer
+    private lateinit var yacineEngine: YacineOpsxEngine
+
     private var previewView: PreviewView? = null
     private var playbackSurfaceView: SurfaceView? = null
 
@@ -40,7 +42,7 @@ class MainActivity : ComponentActivity() {
     ) { permissions ->
         val granted = permissions.entries.all { it.value }
         if (!granted) {
-            updateLog("تنبيه: يجب منح صلاحيات الكاميرا والصوت لتشغيل البث والتسجيل.")
+            updateLog("تنبيه: يرجى منح صلاحيات الكاميرا لتشغيل البث والتسجيل.")
         }
     }
 
@@ -55,11 +57,12 @@ class MainActivity : ComponentActivity() {
 
         cameraRecorder = CameraRecorder(this)
         opsxPlayer = OpsxPlayer()
+        yacineEngine = YacineOpsxEngine()
 
         checkPermissions()
 
         val isRustReady = OpsxNativeBridge.isNativeReady()
-        updateLog(if (isRustReady) "نواة Rust الأصلية متصلة وجاهزة (JNI Native Acceleration)" else "تعمل عبر النواة المدمجة (Kotlin Core Engine)")
+        updateLog(if (isRustReady) "نواة Rust الأصلية متصلة وجاهزة (JNI Native)" else "تعمل عبر النواة المدمجة (Kotlin Engine)")
 
         setContent {
             OpsxTheme {
@@ -87,6 +90,10 @@ class MainActivity : ComponentActivity() {
     fun OpsxMainScreen() {
         var isRecording by remember { mutableStateOf(false) }
         var isPlaying by remember { mutableStateOf(false) }
+        var isYacineRunning by remember { mutableStateOf(false) }
+        var currentOpsxUrl by remember { mutableStateOf("") }
+        var transcodeToHevc by remember { mutableStateOf(false) }
+
         val logs by remember { logState }
         val scrollState = rememberScrollState()
 
@@ -95,25 +102,41 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .padding(12.dp)
         ) {
-            // العنوان
             Text(
-                text = "منظومة OPSF / OPSX - كوتلن خالص 100% مع Rust Core",
+                text = "منظومة OPSF / OPSX - كوتلن خالص 100% بدون وسيط",
                 color = Color.White,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
-                    .padding(bottom = 8.dp)
+                    .padding(bottom = 6.dp)
             )
 
-            // مساحة العرض (كاميرا / مشغل)
+            // إعدادات وضع الترميز
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = if (transcodeToHevc) "وضع الترميز: HEVC (H.265) فائق التوفير" else "وضع الترميز: Direct Remux سريع",
+                    color = if (transcodeToHevc) Color(0xFF00E676) else Color(0xFFFFB300),
+                    fontSize = 12.sp
+                )
+                Switch(
+                    checked = transcodeToHevc,
+                    onCheckedChange = { transcodeToHevc = it }
+                )
+            }
+
+            // شاشة الكاميرا أو العرض
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
                     .background(Color.Black)
             ) {
-                if (!isPlaying) {
+                if (!isPlaying && !isYacineRunning) {
                     AndroidView(
                         factory = { ctx ->
                             PreviewView(ctx).also { previewView = it }
@@ -130,12 +153,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // سجل العمليات والقياسات اللحظية
+            // سجل العمليات
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp)
-                    .padding(top = 8.dp)
+                    .height(130.dp)
+                    .padding(top = 6.dp)
                     .background(Color(0xFF1E1E1E))
                     .padding(8.dp)
                     .verticalScroll(scrollState)
@@ -143,69 +166,104 @@ class MainActivity : ComponentActivity() {
                 Text(
                     text = logs,
                     color = Color(0xFF00E676),
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
             }
 
             // أزرار التحكم
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(top = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Button(
-                    onClick = {
-                        val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
-                        if (!isRecording) {
-                            previewView?.let { pv ->
-                                isRecording = true
-                                updateLog("بدء التسجيل العتادي عبر MediaCodec إلى: recorded_camera.opsx")
-                                cameraRecorder.startRecording(targetFile, pv, this@MainActivity) { status ->
-                                    updateLog(status)
-                                }
-                            }
-                        } else {
-                            isRecording = false
-                            cameraRecorder.stopRecording {
-                                updateLog("تم حفظ مقطع OPSX بنجاح بحجم ${targetFile.length() / 1024} KB.")
-                            }
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isRecording) Color.Red else Color(0xFF0D47A1)
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(if (isRecording) "إيقاف التسجيل" else "تسجيل OPSX عتادي")
-                }
-
-                Button(
-                    onClick = {
-                        val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
-                        if (!isPlaying) {
-                            isPlaying = true
-                            lifecycleScope.launch {
-                                val holder = playbackSurfaceView?.holder
-                                if (holder != null) {
-                                    opsxPlayer.play(targetFile, holder.surface) { status ->
+                    Button(
+                        onClick = {
+                            val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
+                            if (!isRecording) {
+                                previewView?.let { pv ->
+                                    isRecording = true
+                                    updateLog("بدء تسجيل OPSX عتادي: recorded_camera.opsx")
+                                    cameraRecorder.startRecording(targetFile, pv, this@MainActivity) { status ->
                                         updateLog(status)
                                     }
-                                    isPlaying = false
-                                } else {
-                                    updateLog("جاري تهيئة شاشة العرض، اضغط مجدداً...")
+                                }
+                            } else {
+                                isRecording = false
+                                cameraRecorder.stopRecording {
+                                    updateLog("اكتمل حفظ مقطع OPSX بحجم ${targetFile.length() / 1024} KB.")
                                 }
                             }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isRecording) Color.Red else Color(0xFF0D47A1)
+                        )
+                    ) {
+                        Text(if (isRecording) "إيقاف التسجيل" else "تسجيل كاميرا OPSX")
+                    }
+
+                    Button(
+                        onClick = {
+                            val targetFile = File(getExternalFilesDir(null), "recorded_camera.opsx")
+                            if (!isPlaying) {
+                                isPlaying = true
+                                lifecycleScope.launch {
+                                    val holder = playbackSurfaceView?.holder
+                                    if (holder != null) {
+                                        opsxPlayer.play(targetFile, holder.surface) { status ->
+                                            updateLog(status)
+                                        }
+                                        isPlaying = false
+                                    } else {
+                                        updateLog("شاشة العرض غير مهيأة بعد.")
+                                    }
+                                }
+                            } else {
+                                opsxPlayer.stop()
+                                isPlaying = false
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00796B))
+                    ) {
+                        Text(if (isPlaying) "إيقاف المشغل" else "تشغيل ملف OPSX")
+                    }
+                }
+
+                // زر تشغيل قنوات ياسين المباشرة محلياً بدون وسيط
+                Button(
+                    onClick = {
+                        if (!isYacineRunning) {
+                            isYacineRunning = true
+                            updateLog("بدء تشغيل محرك فك ياسين المباشر...")
+                            yacineEngine.startNativeGateway(
+                                channelQuery = "1080|1",
+                                onUrlReady = { url ->
+                                    currentOpsxUrl = url
+                                    updateLog("رابط بث قناتك بصيغة OPSX: $url")
+                                },
+                                onStatus = { status ->
+                                    updateLog(status)
+                                }
+                            )
                         } else {
-                            opsxPlayer.stop()
-                            isPlaying = false
+                            yacineEngine.stop()
+                            isYacineRunning = false
+                            updateLog("تم إيقاف بث القناة.")
                         }
                     },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00796B))
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isYacineRunning) Color(0xFFD32F2F) else Color(0xFFE65100)
+                    )
                 ) {
-                    Text(if (isPlaying) "إيقاف المشغل" else "تشغيل مقطع OPSX")
+                    Text(if (isYacineRunning) "إيقاف بث قناة ياسين" else "فك وبث قناة ياسين (beIN 1) بصيغة OPSX")
                 }
             }
         }
@@ -220,5 +278,10 @@ class MainActivity : ComponentActivity() {
             ),
             content = content
         )
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        yacineEngine.stop()
     }
 }
