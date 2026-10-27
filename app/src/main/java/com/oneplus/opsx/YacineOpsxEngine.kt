@@ -176,7 +176,7 @@ class YacineOpsxEngine {
                 val opsxData = OpsxNativeBridge.demuxTsToOpsx(chunkData, basePtsCounter)
                 val durationMs = (System.nanoTime() - t0) / 1_000_000.0
 
-                basePtsCounter += (chunkData.size / 188) * 30L
+                basePtsCounter += 2000L
                 broadcastChunk(opsxData)
             }
         }
@@ -241,7 +241,7 @@ class YacineOpsxEngine {
             val opsxPackets = OpsxNativeBridge.demuxTsToOpsx(tsData, basePtsCounter)
             val elapsedMs = (System.nanoTime() - tStart) / 1_000_000.0
 
-            basePtsCounter += (tsData.size / 188) * 30L
+            basePtsCounter += 2000L
             val kb = tsData.size / 1024
             onStatus("معالجة محرك Rust: استخراج $kb KB من البث -> تحويلها إلى OPSX في ${String.format("%.2f", elapsedMs)} ms")
 

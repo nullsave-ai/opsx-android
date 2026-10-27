@@ -412,7 +412,7 @@ class MainActivity : ComponentActivity() {
                                             },
                                             modifier = Modifier.weight(1f),
                                             shape = RoundedCornerShape(6.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00695C))
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D47A1))
                                         ) {
                                             Text("الانتقال لصفحة المشغل", fontSize = 11.sp, color = Color.White)
                                         }
@@ -608,7 +608,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPlayerRunning) Color(0xFFD32F2F) else Color(0xFF00796B)
+                                containerColor = if (isPlayerRunning) Color(0xFFD32F2F) else Color(0xFF1565C0)
                             )
                         ) {
                             Text(
