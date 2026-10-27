@@ -321,8 +321,8 @@ class MainActivity : ComponentActivity() {
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Medium,
                                     modifier = Modifier
-                                        .padding(vertical = 5.dp)
-                                        .align(Alignment.CenterHorizontally),
+                                        .fillMaxWidth()
+                                        .padding(vertical = 5.dp),
                                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                 )
                             }
