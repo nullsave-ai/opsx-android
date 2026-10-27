@@ -6,12 +6,12 @@ use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 
 // ==============================================================================
-// 1. عمليات سلامة البيانات والتشفير و FEC
+// 1. عمليات سلامة البيانات والتشفير
 // ==============================================================================
 
 #[no_mangle]
 pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_calculateCrc32(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     data: JByteArray,
 ) -> jint {
@@ -26,7 +26,7 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_calculateCrc32(
 
 #[no_mangle]
 pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_verifyCrc32(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     data: JByteArray,
     expected_crc: jint,
@@ -42,13 +42,13 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_verifyCrc32(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_cryptChaCha20(
-    mut env: JNIEnv,
-    _class: JClass,
-    key: JByteArray,
-    nonce: JByteArray,
-    data: JByteArray,
-) -> JByteArray {
+pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_cryptChaCha20<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    key: JByteArray<'local>,
+    nonce: JByteArray<'local>,
+    data: JByteArray<'local>,
+) -> JByteArray<'local> {
     let key_bytes = match env.convert_byte_array(&key) {
         Ok(b) => b,
         Err(_) => return env.new_byte_array(0).unwrap(),
@@ -80,12 +80,12 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_cryptChaCha20(
 // ==============================================================================
 
 #[no_mangle]
-pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOpsx(
-    mut env: JNIEnv,
-    _class: JClass,
-    ts_data: JByteArray,
+pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOpsx<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ts_data: JByteArray<'local>,
     base_pts: jlong,
-) -> JByteArray {
+) -> JByteArray<'local> {
     let ts_bytes = match env.convert_byte_array(&ts_data) {
         Ok(b) => b,
         Err(_) => return env.new_byte_array(0).unwrap(),
@@ -131,11 +131,10 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
         if pid == video_pid {
             if pusi {
                 if !video_buffer.is_empty() {
-                    // فحص الإطار المفتاحي (Keyframe: NAL type 5 / 7)
                     let is_key = video_buffer.windows(5).any(|w| w == [0, 0, 0, 1, 0x65] || w == [0, 0, 0, 1, 0x67]);
                     pack_opsx_chunk_native(&mut opsx_output, 1, is_key, current_video_pts, &video_buffer);
                     video_buffer.clear();
-                    current_video_pts += 3600; // 90kHz / 25fps = 3600 ticks
+                    current_video_pts += 3600;
                 }
             }
             video_buffer.extend_from_slice(payload_data);
@@ -144,14 +143,13 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
                 if !audio_buffer.is_empty() {
                     pack_opsx_chunk_native(&mut opsx_output, 2, true, current_audio_pts, &audio_buffer);
                     audio_buffer.clear();
-                    current_audio_pts += 1920; // 48kHz audio ticks
+                    current_audio_pts += 1920;
                 }
             }
             audio_buffer.extend_from_slice(payload_data);
         }
     }
 
-    // تفريغ الإطارات الأخيرة
     if !video_buffer.is_empty() {
         pack_opsx_chunk_native(&mut opsx_output, 1, false, current_video_pts, &video_buffer);
     }
@@ -165,15 +163,14 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
     }
 }
 
-// دالة رست سريعة لتغليف مقطع OPSX (28 بايت رأس + حمولة + CRC32)
 fn pack_opsx_chunk_native(out: &mut Vec<u8>, track_id: u8, is_key: bool, pts: u64, payload: &[u8]) {
     let mut header_24 = [0u8; 24];
-    header_24[0] = track_id; // Chunk Type
-    header_24[1] = track_id; // Track ID
-    header_24[2] = if is_key { 1 } else { 0 }; // Flags
-    header_24[3] = 0; // Reserved
+    header_24[0] = track_id;
+    header_24[1] = track_id;
+    header_24[2] = if is_key { 1 } else { 0 };
+    header_24[3] = 0;
     header_24[4..12].copy_from_slice(&pts.to_be_bytes());
-    header_24[12..20].copy_from_slice(&pts.to_be_bytes()); // DTS
+    header_24[12..20].copy_from_slice(&pts.to_be_bytes());
     header_24[20..24].copy_from_slice(&(payload.len() as u32).to_be_bytes());
 
     let mut h_hasher = Hasher::new();
