@@ -56,6 +56,35 @@ class OpsxPlayer {
         playStream(fis, surface, isLive = false, onStatus = onStatus)
     }
 
+    private fun initAudioTrack(sampleRate: Int, channelCount: Int) {
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+        } catch (ignored: Exception) {}
+
+        val channelConfig = if (channelCount == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfig)
+                    .build()
+            )
+            .setBufferSizeInBytes(Math.max(minBuf * 2, 32768))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        audioTrack?.play()
+    }
+
     suspend fun playStream(
         inputStream: InputStream,
         surface: Surface,
@@ -103,34 +132,14 @@ class OpsxPlayer {
             videoDecoder?.configure(vFormat, surface, null, 0)
             videoDecoder?.start()
 
-            // 2. تهيئة مفكك الصوت AAC
+            // 2. تهيئة مفكك الصوت AAC مع دعم ADTS التلقائي
             try {
                 val aFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 48000, 2)
                 aFormat.setInteger(MediaFormat.KEY_IS_ADTS, 1)
                 audioDecoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                 audioDecoder?.configure(aFormat, null, null, 0)
                 audioDecoder?.start()
-
-                // تهيئة AudioTrack لإخراج الصوت لسماعات الهاتف
-                val minBuf = AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-                audioTrack = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(48000)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(Math.max(minBuf, 65536))
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-                audioTrack?.play()
+                initAudioTrack(48000, 2)
             } catch (e: Exception) {
                 onStatus("تنبيه الصوت: ${e.message}")
             }
@@ -165,7 +174,6 @@ class OpsxPlayer {
                 if (!readFully(inputStream, crcBuf)) break
                 val storedPayloadCrc = ByteBuffer.wrap(crcBuf).order(ByteOrder.BIG_ENDIAN).int
 
-                // فحص النزاهة السريع عبر Rust JNI
                 val isPayloadValid = OpsxNativeBridge.verify(payload, storedPayloadCrc)
                 if (!isPayloadValid) {
                     continue
@@ -183,15 +191,22 @@ class OpsxPlayer {
                         }
 
                         var outIndex = aDecoder.dequeueOutputBuffer(aBufferInfo, 0)
-                        while (outIndex >= 0) {
-                            val outBuf = aDecoder.getOutputBuffer(outIndex)
-                            if (outBuf != null && aBufferInfo.size > 0) {
-                                val pcmData = ByteArray(aBufferInfo.size)
-                                outBuf.position(aBufferInfo.offset)
-                                outBuf.get(pcmData, 0, aBufferInfo.size)
-                                audioTrack?.write(pcmData, 0, pcmData.size)
+                        while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                val newFmt = aDecoder.outputFormat
+                                val sRate = newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                                val chCount = newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                                initAudioTrack(sRate, chCount)
+                            } else if (outIndex >= 0) {
+                                val outBuf = aDecoder.getOutputBuffer(outIndex)
+                                if (outBuf != null && aBufferInfo.size > 0) {
+                                    val pcmData = ByteArray(aBufferInfo.size)
+                                    outBuf.position(aBufferInfo.offset)
+                                    outBuf.get(pcmData, 0, aBufferInfo.size)
+                                    audioTrack?.write(pcmData, 0, pcmData.size)
+                                }
+                                aDecoder.releaseOutputBuffer(outIndex, false)
                             }
-                            aDecoder.releaseOutputBuffer(outIndex, false)
                             outIndex = aDecoder.dequeueOutputBuffer(aBufferInfo, 0)
                         }
                     }
@@ -208,7 +223,7 @@ class OpsxPlayer {
 
                         val outIndex = vDecoder.dequeueOutputBuffer(vBufferInfo, 8000)
                         if (outIndex >= 0) {
-                            // ضبط معدل الإطارات الحقيقي لمنع التسريع 30x (Real-time Frame Rate Regulation)
+                            // ضبط دقيق لسرعة البث الطبيعية 1.0x بدون بطء ولا تسريع
                             if (playbackStartRealtimeNs == -1L) {
                                 playbackStartRealtimeNs = System.nanoTime()
                                 playbackStartPtsMs = pts
@@ -218,14 +233,13 @@ class OpsxPlayer {
                             val targetStreamMs = pts - playbackStartPtsMs
                             val diffMs = targetStreamMs - elapsedRealtimeMs
 
-                            if (diffMs > 4) {
-                                val sleepMs = Math.min(diffMs, 80L)
-                                try { Thread.sleep(sleepMs) } catch (ignored: Exception) {}
+                            if (diffMs in 2..35) {
+                                try { Thread.sleep(diffMs) } catch (ignored: Exception) {}
                             }
 
                             vDecoder.releaseOutputBuffer(outIndex, true)
                             frameCount++
-                            if (frameCount % 60L == 0L) {
+                            if (frameCount % 90L == 0L) {
                                 onStatus("عرض مباشر متزامن: تم بث $frameCount إطار عتادياً بالصوت والصورة")
                             }
                         }

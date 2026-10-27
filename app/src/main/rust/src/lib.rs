@@ -79,6 +79,59 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_cryptChaCha20<'loc
 // 2. محرك رست عالي الأداء: فك حزم MPEG-TS وتحويلها فورياً إلى OPSX (Zero-GC Demuxer)
 // ==============================================================================
 
+fn parse_pes_pts_ms(raw: &[u8]) -> Option<u64> {
+    if raw.len() >= 14 && raw[0] == 0 && raw[1] == 0 && raw[2] == 1 {
+        let flags = raw[7];
+        if (flags & 0x80) != 0 {
+            let b9 = raw[9] as u64;
+            let b10 = raw[10] as u64;
+            let b11 = raw[11] as u64;
+            let b12 = raw[12] as u64;
+            let b13 = raw[13] as u64;
+            let pts_ticks = (((b9 >> 1) & 0x07) << 30)
+                | (b10 << 22)
+                | (((b11 >> 1) & 0x7F) << 15)
+                | (b12 << 7)
+                | ((b13 >> 1) & 0x7F);
+            return Some(pts_ticks / 90); // تحويل مباشر إلى مللي ثانية دقيقة
+        }
+    }
+    None
+}
+
+fn strip_audio_pes(raw: &[u8]) -> &[u8] {
+    if raw.len() >= 9 && raw[0] == 0 && raw[1] == 0 && raw[2] == 1 && (raw[3] >= 0xC0 && raw[3] <= 0xDF) {
+        let header_data_len = raw[8] as usize;
+        let start = 9 + header_data_len;
+        if start < raw.len() {
+            return &raw[start..];
+        }
+    }
+    // مسح استباقي للبحث عن رمز تزامن ADTS (0xFF 0xFx)
+    for i in 0..raw.len().saturating_sub(2) {
+        if raw[i] == 0xFF && (raw[i + 1] & 0xF0) == 0xF0 {
+            return &raw[i..];
+        }
+    }
+    raw
+}
+
+fn strip_video_pes(raw: &[u8]) -> &[u8] {
+    if raw.len() >= 9 && raw[0] == 0 && raw[1] == 0 && raw[2] == 1 && (raw[3] >= 0xE0 && raw[3] <= 0xEF) {
+        let header_data_len = raw[8] as usize;
+        let start = 9 + header_data_len;
+        if start < raw.len() {
+            return &raw[start..];
+        }
+    }
+    for i in 0..raw.len().saturating_sub(4) {
+        if raw[i] == 0 && raw[i + 1] == 0 && ((raw[i + 2] == 1) || (raw[i + 2] == 0 && raw[i + 3] == 1)) {
+            return &raw[i..];
+        }
+    }
+    raw
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOpsx<'local>(
     mut env: JNIEnv<'local>,
@@ -131,19 +184,25 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
         if pid == video_pid {
             if pusi {
                 if !video_buffer.is_empty() {
-                    let is_key = video_buffer.windows(5).any(|w| w == [0, 0, 0, 1, 0x65] || w == [0, 0, 0, 1, 0x67]);
-                    pack_opsx_chunk_native(&mut opsx_output, 1, is_key, current_video_pts, &video_buffer);
+                    let pts_ms = parse_pes_pts_ms(&video_buffer).unwrap_or(current_video_pts);
+                    let clean_video = strip_video_pes(&video_buffer);
+                    let is_key = clean_video.windows(5).any(|w| w == [0, 0, 0, 1, 0x65] || w == [0, 0, 0, 1, 0x67]);
+                    pack_opsx_chunk_native(&mut opsx_output, 1, is_key, pts_ms, clean_video);
                     video_buffer.clear();
-                    current_video_pts += 3600;
+                    current_video_pts = pts_ms + 20; // 50fps = 20ms per frame
                 }
             }
             video_buffer.extend_from_slice(payload_data);
         } else if pid == audio_pid {
             if pusi {
                 if !audio_buffer.is_empty() {
-                    pack_opsx_chunk_native(&mut opsx_output, 2, true, current_audio_pts, &audio_buffer);
+                    let pts_ms = parse_pes_pts_ms(&audio_buffer).unwrap_or(current_audio_pts);
+                    let clean_audio = strip_audio_pes(&audio_buffer);
+                    if clean_audio.len() >= 7 {
+                        pack_opsx_chunk_native(&mut opsx_output, 2, true, pts_ms, clean_audio);
+                    }
                     audio_buffer.clear();
-                    current_audio_pts += 1920;
+                    current_audio_pts = pts_ms + 21; // 1024 samples @ 48kHz = ~21.3ms
                 }
             }
             audio_buffer.extend_from_slice(payload_data);
@@ -151,10 +210,16 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
     }
 
     if !video_buffer.is_empty() {
-        pack_opsx_chunk_native(&mut opsx_output, 1, false, current_video_pts, &video_buffer);
+        let pts_ms = parse_pes_pts_ms(&video_buffer).unwrap_or(current_video_pts);
+        let clean_video = strip_video_pes(&video_buffer);
+        pack_opsx_chunk_native(&mut opsx_output, 1, false, pts_ms, clean_video);
     }
     if !audio_buffer.is_empty() {
-        pack_opsx_chunk_native(&mut opsx_output, 2, true, current_audio_pts, &audio_buffer);
+        let pts_ms = parse_pes_pts_ms(&audio_buffer).unwrap_or(current_audio_pts);
+        let clean_audio = strip_audio_pes(&audio_buffer);
+        if clean_audio.len() >= 7 {
+            pack_opsx_chunk_native(&mut opsx_output, 2, true, pts_ms, clean_audio);
+        }
     }
 
     match env.byte_array_from_slice(&opsx_output) {
@@ -163,14 +228,14 @@ pub extern "system" fn Java_com_oneplus_opsx_OpsxNativeBridge_nativeDemuxTsToOps
     }
 }
 
-fn pack_opsx_chunk_native(out: &mut Vec<u8>, track_id: u8, is_key: bool, pts: u64, payload: &[u8]) {
+fn pack_opsx_chunk_native(out: &mut Vec<u8>, track_id: u8, is_key: bool, pts_ms: u64, payload: &[u8]) {
     let mut header_24 = [0u8; 24];
     header_24[0] = track_id;
     header_24[1] = track_id;
     header_24[2] = if is_key { 1 } else { 0 };
     header_24[3] = 0;
-    header_24[4..12].copy_from_slice(&pts.to_be_bytes());
-    header_24[12..20].copy_from_slice(&pts.to_be_bytes());
+    header_24[4..12].copy_from_slice(&pts_ms.to_be_bytes());
+    header_24[12..20].copy_from_slice(&pts_ms.to_be_bytes());
     header_24[20..24].copy_from_slice(&(payload.len() as u32).to_be_bytes());
 
     let mut h_hasher = Hasher::new();
